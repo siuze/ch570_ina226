@@ -1,0 +1,39 @@
+# ---- Scratch / one-off debug scripts & generated dumps (kept locally, not in repo) ----
+tmp/
+
+# ---- Firmware build outputs ----
+*.o
+*.d
+*.err
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+obj_linux/
+
+# ---- app_win (CMake / MSVC) build dir ----
+app_win/build/
+
+# ---- ch570mon built binary ----
+app_linux/ch570mon
+
+# ---- Downloaded RISC-V toolchains (large binaries; not tracked) ----
+tools/xpack-riscv-none-elf-gcc-*/
+tools/riscv-gcc.tar.gz
+tools/build-tools/
+tools/riscv-gcc/
+
+# ---- MounRiver Studio session state (regenerable; launch.json 等含本地个人路径) ----
+.mrs/
+*.snapshot
+*.mrs-workspace
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- Syncthing / OS / editor noise ----
+.stfolder/
+Thumbs.db
+Desktop.ini

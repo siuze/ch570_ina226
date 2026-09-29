@@ -1,0 +1,88 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------
+  # 固件：用标准 RISC-V GCC 对两端固件（Probe / Dongle）做编译校验。
+  # 说明：最终链接需 WCH 专有库 libCH57xRF.a / libISP572.a（不在仓库内，
+  #       随官方 CH57x EVT/SDK 分发），故 CI 只校验「全部翻译单元编译通过」，
+  #       不产出 .hex。要生成可烧录 .hex 请用 MounRiver Studio（见 readme）。
+  # ------------------------------------------------------------------
+  firmware:
+    name: firmware (compile-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download xPack riscv-none-elf-gcc (linux-x64)
+        run: |
+          set -euo pipefail
+          VER=14.2.0-2
+          URL="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${VER}/xpack-riscv-none-elf-gcc-${VER}-linux-x64.tar.gz"
+          mkdir -p tools
+          curl -L --retry 3 --retry-delay 2 -o /tmp/riscv.tar.gz "$URL"
+          tar -xzf /tmp/riscv.tar.gz -C tools
+          test -x "tools/xpack-riscv-none-elf-gcc-${VER}/bin/riscv-none-elf-gcc"
+          "tools/xpack-riscv-none-elf-gcc-${VER}/bin/riscv-none-elf-gcc" --version | head -1
+
+      - name: Compile-check RF_Uart (Probe) & RF_UartDongle (Dongle)
+        run: bash tools/build_linux.sh
+
+  # ------------------------------------------------------------------
+  # Windows 上位机 (app_win)：MSVC x64 Release -> CH570_Monitor.exe
+  # ------------------------------------------------------------------
+  app-win:
+    name: app_win (windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure & build (Visual Studio 2022, x64 Release)
+        working-directory: app_win
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64
+          cmake --build build --config Release
+
+      - name: Upload CH570_Monitor.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CH570_Monitor-windows-x64
+          path: app_win/build/Release/CH570_Monitor.exe
+
+  # ------------------------------------------------------------------
+  # Linux 上位机 (app_linux/ch570mon)：x64 + aarch64（原生 ARM runner）
+  # ------------------------------------------------------------------
+  app-linux:
+    name: app_linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ncurses (wide-char) + pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libncurses-dev libncursesw5-dev \
+            || sudo apt-get install -y pkg-config libncurses-dev
+
+      - name: Build ch570mon
+        working-directory: app_linux
+        run: make
+
+      - name: Upload ch570mon (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ch570mon-linux-${{ matrix.arch }}
+          path: app_linux/ch570mon

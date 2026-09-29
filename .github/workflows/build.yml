@@ -38,7 +38,9 @@ jobs:
   # ------------------------------------------------------------------
   app-win:
     name: app_win (windows x64)
-    runs-on: windows-latest
+    # 钉定 windows-2022：该镜像确定含 VS2022(v17)，与下方 "Visual Studio 17 2022" 生成器精确匹配；
+    # windows-latest 可能指向不含 v17 实例的新镜像，导致 CMake 配置阶段报“could not find any instance of Visual Studio”。
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 

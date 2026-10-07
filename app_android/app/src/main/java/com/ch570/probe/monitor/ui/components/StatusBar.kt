@@ -12,14 +12,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,7 +31,6 @@ import androidx.compose.ui.unit.sp
 import com.ch570.probe.monitor.ui.theme.ColorBgCard
 import com.ch570.probe.monitor.ui.theme.ColorBorder
 import com.ch570.probe.monitor.ui.theme.ColorCurrent
-import com.ch570.probe.monitor.ui.theme.ColorDanger
 import com.ch570.probe.monitor.ui.theme.ColorTextMain
 import com.ch570.probe.monitor.ui.theme.ColorTextMuted
 import com.ch570.probe.monitor.viewmodel.UiDashboardState
@@ -43,8 +38,6 @@ import com.ch570.probe.monitor.viewmodel.UiDashboardState
 @Composable
 fun StatusBar(
     state: UiDashboardState,
-    onStartScan: () -> Unit,
-    onStopScan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -64,95 +57,60 @@ fun StatusBar(
             .shadow(elevation = 2.dp, shape = RoundedCornerShape(8.dp))
             .background(ColorBgCard, RoundedCornerShape(8.dp))
             .border(1.dp, ColorBorder, RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Left: BLE status LED + label + button
+            // Left: breathing dot + label
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (state.isScanning) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(ColorCurrent.copy(alpha = alphaAnim))
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "BLE 监听中",
-                        color = ColorCurrent,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = onStopScan,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFFEE2E2),
-                            contentColor = ColorDanger
-                        ),
-                        shape = RoundedCornerShape(4.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text(text = "停止", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(ColorTextMuted.copy(alpha = 0.4f))
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "BLE 停止",
-                        color = ColorTextMuted,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = onStartScan,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFDCFCE7),
-                            contentColor = ColorCurrent
-                        ),
-                        shape = RoundedCornerShape(4.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text(text = "启动", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(ColorCurrent.copy(alpha = if (state.isScanning) alphaAnim else 0.4f))
+                )
+                Spacer(modifier = Modifier.width(7.dp))
+                Text(
+                    text = if (state.isScanning) "BLE 持续监听中" else "BLE 准备就绪",
+                    color = if (state.isScanning) ColorCurrent else ColorTextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
             }
 
-            // Right: Signal RSSI, packet count, MAC address
+            // Right: Signal RSSI & Frame count in single clean line
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "信号: ${state.rssi} dBm",
+                    text = "信号: ",
                     color = ColorTextMuted,
                     fontSize = 12.sp
                 )
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "| 帧: ${state.packetCount}",
-                    color = ColorTextMuted,
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = state.deviceMac,
+                    text = "${state.rssi} dBm",
                     color = ColorTextMain,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "| 接收: ",
+                    color = ColorTextMuted,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "${state.packetCount} 帧",
+                    color = ColorTextMain,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
                 )
             }
         }

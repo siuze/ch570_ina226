@@ -4,11 +4,10 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
-import kotlin.math.min
 
 /**
  * Filter and format logic for jitter-free KPI card display,
- * strictly matching docs/上位机详细设计.md section 6 and app_win.
+ * strictly matching docs/上位机数据显示与抗抖设计.md and app_win.
  */
 class TelemetryFilter {
 
@@ -69,11 +68,7 @@ class TelemetryFilter {
         val scale = if (currentInA) 0.001 else 1.0
         val unit = if (currentInA) "A" else "mA"
         val value = smoothCurrent * scale
-        val text = if (currentInA) {
-            String.format(Locale.US, "%.3f", value)
-        } else {
-            format5Slot(value, 3)
-        }
+        val text = formatFixedDigits(value, decimals = if (currentInA) 3 else 2)
         return FormattedMetric(text = text, unit = unit, isLargeUnit = currentInA, rawScale = scale)
     }
 
@@ -81,11 +76,7 @@ class TelemetryFilter {
         val scale = if (powerInW) 0.001 else 1.0
         val unit = if (powerInW) "W" else "mW"
         val value = smoothPower * scale
-        val text = if (powerInW) {
-            String.format(Locale.US, "%.3f", value)
-        } else {
-            format5Slot(value, 2)
-        }
+        val text = formatFixedDigits(value, decimals = if (powerInW) 3 else 2)
         return FormattedMetric(text = text, unit = unit, isLargeUnit = powerInW, rawScale = scale)
     }
 
@@ -93,11 +84,7 @@ class TelemetryFilter {
         val scale = if (voltageInV) 1.0 else 1000.0
         val unit = if (voltageInV) "V" else "mV"
         val value = smoothVoltage * scale
-        val text = if (voltageInV) {
-            String.format(Locale.US, "%.3f", value)
-        } else {
-            format5Slot(value, 1)
-        }
+        val text = formatFixedDigits(value, decimals = if (voltageInV) 3 else 1)
         return FormattedMetric(text = text, unit = unit, isLargeUnit = voltageInV, rawScale = scale)
     }
 
@@ -119,18 +106,12 @@ class TelemetryFilter {
             return sorted[sorted.size / 2]
         }
 
-        fun format5Slot(valInput: Double, decimalsUnder100: Int = 2): String {
+        /**
+         * Formats numerical value with fixed decimal places for solid monospace display without jumping width.
+         */
+        fun formatFixedDigits(valInput: Double, decimals: Int = 2): String {
             if (valInput.isNaN() || valInput.isInfinite()) return "0.00"
-            val absVal = abs(valInput)
-            val prefix = if (valInput < -0.0001) "-" else ""
-            val formatted = when {
-                absVal >= 10000.0 -> String.format(Locale.US, "%.0f", absVal)
-                absVal >= 1000.0 -> String.format(Locale.US, "%.1f", absVal)
-                absVal >= 100.0 -> String.format(Locale.US, "%.2f", absVal)
-                absVal < 100.0 && decimalsUnder100 >= 3 -> String.format(Locale.US, "%.3f", absVal)
-                else -> String.format(Locale.US, "%.2f", absVal)
-            }
-            return prefix + formatted
+            return String.format(Locale.US, "%.${decimals}f", valInput)
         }
 
         fun formatMaxDigits(value: Double, maxDigits: Int = 4): String {

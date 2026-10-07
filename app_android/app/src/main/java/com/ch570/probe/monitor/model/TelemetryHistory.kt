@@ -1,12 +1,14 @@
 package com.ch570.probe.monitor.model
 
-import java.util.Collections
+import java.util.ArrayList
+import kotlin.math.abs
 
 /**
  * High-performance telemetry buffer keeping history samples, rolling window statistics,
  * and capacity/energy integration matching app_win TelemetryHistory.
+ * Expanded to 100,000 points to easily support long windows (up to 5 hours).
  */
-class TelemetryHistory(private val capacity: Int = 10000) {
+class TelemetryHistory(private val capacity: Int = 100000) {
 
     private val lock = Any()
     private val points = ArrayList<TelemetryPoint>(capacity)
@@ -67,20 +69,62 @@ class TelemetryHistory(private val capacity: Int = 10000) {
 
     /**
      * Get recent points within [windowSeconds] for waveform rendering.
+     * Downsamples if point count exceeds 1500 for maximum rendering performance.
      */
     fun getWindowPoints(windowSeconds: Double): List<TelemetryPoint> {
         synchronized(lock) {
             if (points.isEmpty()) return emptyList()
             val lastTs = points.last().timestamp
             val cutoff = lastTs - windowSeconds
-            val result = ArrayList<TelemetryPoint>()
+            val inWindow = ArrayList<TelemetryPoint>()
             for (i in points.indices.reversed()) {
                 val p = points[i]
                 if (p.timestamp < cutoff) break
-                result.add(p)
+                inWindow.add(p)
             }
-            result.reverse()
-            return result
+            inWindow.reverse()
+
+            if (inWindow.size <= 1500) {
+                return inWindow
+            }
+
+            // Downsample for smooth Canvas rendering when viewing hours of data
+            val step = inWindow.size.toDouble() / 1500.0
+            val sampled = ArrayList<TelemetryPoint>(1500)
+            var curIndex = 0.0
+            while (curIndex < inWindow.size) {
+                sampled.add(inWindow[curIndex.toInt()])
+                curIndex += step
+            }
+            if (sampled.lastOrNull() != inWindow.lastOrNull()) {
+                sampled.add(inWindow.last())
+            }
+            return sampled
+        }
+    }
+
+    /**
+     * Find nearest telemetry point to a target relative timestamp.
+     */
+    fun findNearestPoint(targetTime: Double, windowSeconds: Double): TelemetryPoint? {
+        synchronized(lock) {
+            if (points.isEmpty()) return null
+            val lastTs = points.last().timestamp
+            val cutoff = lastTs - windowSeconds
+
+            var bestPoint: TelemetryPoint? = null
+            var minDiff = Double.MAX_VALUE
+
+            for (i in points.indices.reversed()) {
+                val p = points[i]
+                if (p.timestamp < cutoff) break
+                val diff = abs(p.timestamp - targetTime)
+                if (diff < minDiff) {
+                    minDiff = diff
+                    bestPoint = p
+                }
+            }
+            return bestPoint
         }
     }
 

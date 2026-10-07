@@ -35,7 +35,6 @@ import com.ch570.probe.monitor.viewmodel.MainViewModel
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onExportCsv: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -59,29 +58,28 @@ fun MainScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 1. Status Bar
-            StatusBar(
-                state = state,
-                onStartScan = { viewModel.startScan() },
-                onStopScan = { viewModel.stopScan() }
-            )
+            // 1. Status Bar (Continuous listening, signal RSSI & frame count, no stop button)
+            StatusBar(state = state)
 
-            // 2. 4 Core KPI Cards
+            // 2. 4 Core KPI Cards (Fixed height, monospace numbers, fixed unit, energy split rows)
             KpiCards(
                 state = state,
                 onResetEnergy = { viewModel.resetEnergy() }
             )
 
-            // 3. Real-time Waveform View
+            // 3. Real-time Waveform View (Y-axis tick ruler, pan/zoom gestures, tap inspection, double tap dismiss)
             WaveformView(
                 points = state.chartPoints,
                 timeWindowSeconds = state.timeWindowSeconds,
                 showCurrent = state.showCurrent,
                 showPower = state.showPower,
-                showVoltage = state.showVoltage
+                showVoltage = state.showVoltage,
+                selectedPoint = state.selectedPoint,
+                onSelectPoint = { viewModel.selectPointAtTime(it) },
+                onClearSelection = { viewModel.clearSelectedPoint() }
             )
 
-            // 4. Waveform Controls & Export Actions
+            // 4. Waveform Controls (Dropdown window selection, channel toggles, pause/clear, no CSV export)
             Controls(
                 state = state,
                 onTogglePause = { viewModel.togglePause() },
@@ -89,11 +87,7 @@ fun MainScreen(
                 onSetTimeWindow = { viewModel.setTimeWindow(it) },
                 onToggleCurrent = { viewModel.toggleShowCurrent(it) },
                 onTogglePower = { viewModel.toggleShowPower(it) },
-                onToggleVoltage = { viewModel.toggleShowVoltage(it) },
-                onExportCsv = {
-                    val csv = viewModel.exportCsvData()
-                    onExportCsv(csv)
-                }
+                onToggleVoltage = { viewModel.toggleShowVoltage(it) }
             )
 
             Spacer(modifier = Modifier.height(6.dp))

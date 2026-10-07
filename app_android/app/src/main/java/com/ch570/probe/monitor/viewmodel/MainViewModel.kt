@@ -14,14 +14,27 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+
+data class TimeWindowOption(
+    val label: String,
+    val seconds: Double
+)
+
+val TIME_WINDOW_OPTIONS = listOf(
+    TimeWindowOption("60s", 60.0),
+    TimeWindowOption("120s", 120.0),
+    TimeWindowOption("5min", 300.0),
+    TimeWindowOption("10min", 600.0),
+    TimeWindowOption("30min", 1800.0),
+    TimeWindowOption("1h", 3600.0),
+    TimeWindowOption("2h", 7200.0),
+    TimeWindowOption("5h", 18000.0)
+)
 
 data class UiDashboardState(
     val isScanning: Boolean = false,
     val isPaused: Boolean = false,
-    val deviceMac: String = "CA:57:09:1E:A2:26",
+    val deviceMac: String = "",
     val rssi: Int = 0,
     val packetCount: Long = 0L,
     val lastError: String? = null,
@@ -39,18 +52,22 @@ data class UiDashboardState(
     val vStats: MetricStats = MetricStats(),
 
     // Chart display configuration
-    val timeWindowSeconds: Double = 30.0,
+    val timeWindowSeconds: Double = 60.0,
+    val selectedWindowLabel: String = "60s",
     val showCurrent: Boolean = true,
     val showPower: Boolean = true,
     val showVoltage: Boolean = false,
-    val chartPoints: List<TelemetryPoint> = emptyList()
+    val chartPoints: List<TelemetryPoint> = emptyList(),
+
+    // Inspect cursor on chart
+    val selectedPoint: TelemetryPoint? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val bleScanner = BleScanner(application.applicationContext)
 
-    private val history = TelemetryHistory(15000)
+    private val history = TelemetryHistory(100000)
     private val filter = TelemetryFilter()
 
     private val startNanoTime = System.nanoTime()
@@ -60,14 +77,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var packetCount = 0L
     private var lastRssi = 0
-    private var deviceMac = "--:--:--:--:--:--"
+    private var deviceMac = ""
 
     private val vStats = MetricStats()
     private val iStats = MetricStats()
     private val pStats = MetricStats()
 
     init {
-        // Collect BLE scan events
+        // Collect BLE scan events continuously
         viewModelScope.launch(Dispatchers.Default) {
             bleScanner.scanEvents.collect { event ->
                 val nowSec = (System.nanoTime() - startNanoTime) / 1_000_000_000.0
@@ -91,7 +108,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     history.push(pt)
                 }
 
-                // Update filter on new sample
+                // Update display filter
                 filter.processRecentSamples(history.getRecent(3))
                 refreshUiState()
             }
@@ -148,6 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         history.clear()
         filter.reset()
         packetCount = 0L
+        _uiState.value = _uiState.value.copy(selectedPoint = null)
         refreshUiState()
     }
 
@@ -156,8 +174,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshUiState()
     }
 
-    fun setTimeWindow(seconds: Double) {
-        _uiState.value = _uiState.value.copy(timeWindowSeconds = seconds)
+    fun setTimeWindow(option: TimeWindowOption) {
+        _uiState.value = _uiState.value.copy(
+            timeWindowSeconds = option.seconds,
+            selectedWindowLabel = option.label,
+            selectedPoint = null
+        )
         refreshUiState()
     }
 
@@ -173,40 +195,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(showVoltage = show)
     }
 
-    /**
-     * Export all collected points to standard CSV format identical to win_app.
-     * timestamp_ms,time,current_mA,voltage_V,power_mW,capacity_mAh,energy_mWh
-     */
-    fun exportCsvData(): String {
-        val allPoints = history.getAllPoints()
-        val sb = StringBuilder()
-        sb.append("timestamp_ms,time,current_mA,voltage_V,power_mW,capacity_mAh,energy_mWh\n")
+    fun selectPointAtTime(relativeTime: Double) {
+        val pt = history.findNearestPoint(relativeTime, _uiState.value.timeWindowSeconds)
+        _uiState.value = _uiState.value.copy(selectedPoint = pt)
+    }
 
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
-        var accAh = 0.0
-        var accWh = 0.0
-        var lastTs = -1.0
-
-        for (p in allPoints) {
-            if (lastTs >= 0.0) {
-                val dt = p.timestamp - lastTs
-                if (dt in 0.0..10.0) {
-                    val hours = dt / 3600.0
-                    accAh += (p.currentMa / 1000.0) * hours
-                    accWh += (p.powerMw / 1000.0) * hours
-                }
-            }
-            lastTs = p.timestamp
-
-            val timeStr = sdf.format(Date(p.epochMs))
-            sb.append(p.epochMs).append(",")
-                .append(timeStr).append(",")
-                .append(String.format(Locale.US, "%.3f", p.currentMa)).append(",")
-                .append(String.format(Locale.US, "%.6f", p.voltageV)).append(",")
-                .append(String.format(Locale.US, "%.3f", p.powerMw)).append(",")
-                .append(String.format(Locale.US, "%.6f", accAh * 1000.0)).append(",")
-                .append(String.format(Locale.US, "%.6f", accWh * 1000.0)).append("\n")
-        }
-        return sb.toString()
+    fun clearSelectedPoint() {
+        _uiState.value = _uiState.value.copy(selectedPoint = null)
     }
 }

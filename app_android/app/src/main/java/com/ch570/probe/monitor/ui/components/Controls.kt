@@ -18,9 +18,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
@@ -36,6 +41,8 @@ import com.ch570.probe.monitor.ui.theme.ColorPower
 import com.ch570.probe.monitor.ui.theme.ColorTextMain
 import com.ch570.probe.monitor.ui.theme.ColorTextMuted
 import com.ch570.probe.monitor.ui.theme.ColorVoltage
+import com.ch570.probe.monitor.viewmodel.TIME_WINDOW_OPTIONS
+import com.ch570.probe.monitor.viewmodel.TimeWindowOption
 import com.ch570.probe.monitor.viewmodel.UiDashboardState
 
 @Composable
@@ -43,13 +50,14 @@ fun Controls(
     state: UiDashboardState,
     onTogglePause: () -> Unit,
     onClearData: () -> Unit,
-    onSetTimeWindow: (Double) -> Unit,
+    onSetTimeWindow: (TimeWindowOption) -> Unit,
     onToggleCurrent: (Boolean) -> Unit,
     onTogglePower: (Boolean) -> Unit,
     onToggleVoltage: (Boolean) -> Unit,
-    onExportCsv: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -59,44 +67,63 @@ fun Controls(
             .padding(10.dp)
     ) {
         Column {
-            // Row 1: Time Window selector + Channel toggles
+            // Row 1: Time Window dropdown + Channel toggles
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Time Window chips
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "窗口:",
-                        fontSize = 12.sp,
-                        color = ColorTextMuted
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    listOf(10.0 to "10s", 30.0 to "30s", 60.0 to "60s").forEach { (sec, label) ->
-                        val isSelected = state.timeWindowSeconds == sec
-                        Box(
-                            modifier = Modifier
-                                .clickable { onSetTimeWindow(sec) }
-                                .background(
-                                    if (isSelected) ColorVoltage else Color.Transparent,
-                                    RoundedCornerShape(4.dp)
-                                )
-                                .border(
-                                    1.dp,
-                                    if (isSelected) ColorVoltage else ColorBorder,
-                                    RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Text(
-                                text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) Color.White else ColorTextMain
+                // Dropdown selector for Time Window
+                Box {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .background(Color(0xFFF1F5F9), RoundedCornerShape(6.dp))
+                            .border(1.dp, ColorBorder, RoundedCornerShape(6.dp))
+                            .clickable { expanded = true }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "窗口: ",
+                            fontSize = 12.sp,
+                            color = ColorTextMuted
+                        )
+                        Text(
+                            text = state.selectedWindowLabel,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ColorVoltage
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "▼",
+                            fontSize = 9.sp,
+                            color = ColorTextMuted
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier.background(ColorBgCard)
+                    ) {
+                        TIME_WINDOW_OPTIONS.forEach { opt ->
+                            val isSelected = opt.label == state.selectedWindowLabel
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = opt.label,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) ColorVoltage else ColorTextMain
+                                    )
+                                },
+                                onClick = {
+                                    onSetTimeWindow(opt)
+                                    expanded = false
+                                }
                             )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
                     }
                 }
 
@@ -125,10 +152,10 @@ fun Controls(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Row 2: Action buttons (Pause, Clear, Export CSV)
+            // Row 2: Action buttons (Pause/Resume, Clear Data) - NO CSV EXPORT
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Button(
                     onClick = onTogglePause,
@@ -136,12 +163,12 @@ fun Controls(
                         containerColor = if (state.isPaused) Color(0xFFFEF3C7) else Color(0xFFF1F5F9),
                         contentColor = if (state.isPaused) ColorPower else ColorTextMain
                     ),
-                    shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier.weight(1f).height(36.dp)
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(38.dp)
                 ) {
                     Text(
                         text = if (state.isPaused) "继续采集" else "暂停采集",
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -152,18 +179,14 @@ fun Controls(
                         containerColor = Color(0xFFFEE2E2),
                         contentColor = ColorDanger
                     ),
-                    shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier.weight(1f).height(36.dp)
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(38.dp)
                 ) {
-                    Text(text = "清屏数据", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
-
-                OutlinedButton(
-                    onClick = onExportCsv,
-                    shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier.weight(1.2f).height(36.dp)
-                ) {
-                    Text(text = "导出 CSV", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ColorVoltage)
+                    Text(
+                        text = "清屏数据",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
@@ -181,7 +204,7 @@ fun ChannelCheckbox(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 3.dp)
+            .padding(horizontal = 2.dp)
     ) {
         Checkbox(
             checked = checked,
@@ -194,7 +217,7 @@ fun ChannelCheckbox(
         )
         Text(
             text = label,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             color = if (checked) color else ColorTextMuted
         )

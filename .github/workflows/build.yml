@@ -91,7 +91,7 @@ jobs:
           path: app_linux/ch570mon
 
   # ------------------------------------------------------------------
-  # Android BLE monitor: build both debug and release APKs.
+  # Android BLE monitor: build the ARMv8 and universal release APKs.
   # ------------------------------------------------------------------
   app-android:
     name: app_android (APK)
@@ -110,17 +110,17 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Build debug and release APKs
+      - name: Build ARMv8 and universal release APKs
         working-directory: app_android
-        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+        run: gradle --no-daemon :app:assembleArm64Release :app:assembleUniversalRelease
 
       - name: Upload Android APKs
         uses: actions/upload-artifact@v4
         with:
           name: CH570_Monitor-android
           path: |
-            app_android/app/build/outputs/apk/debug/*.apk
-            app_android/app/build/outputs/apk/release/*.apk
+            app_android/app/build/outputs/apk/arm64/release/*.apk
+            app_android/app/build/outputs/apk/universal/release/*.apk
           if-no-files-found: error
 
   release:
@@ -153,17 +153,17 @@ jobs:
           mkdir -p release/package
           cp release/firmware/*.hex release/package/
           find release/windows -type f -name 'CH570_Monitor.exe' -exec cp {} release/package/ \;
-          debug_apk=$(find release/android -type f -path '*/debug/*.apk' | head -n 1)
-          release_apk=$(find release/android -type f -path '*/release/*.apk' | head -n 1)
-          test -n "$debug_apk"
-          test -n "$release_apk"
-          cp "$debug_apk" release/package/app-debug.apk
-          cp "$release_apk" release/package/app-release.apk
+          arm64_apk=$(find release/android -type f -iname '*arm64*.apk' | head -n 1)
+          universal_apk=$(find release/android -type f -iname '*universal*.apk' | head -n 1)
+          test -n "$arm64_apk"
+          test -n "$universal_apk"
+          cp "$arm64_apk" release/package/CH570-arm64-v8a.apk
+          cp "$universal_apk" release/package/CH570-universal.apk
           cp release/linux/x64/ch570mon release/package/ch570mon-linux-x64
           cp release/linux/aarch64/ch570mon release/package/ch570mon-linux-aarch64
           test -f release/package/CH570_Monitor.exe
-          test -f release/package/app-debug.apk
-          test -f release/package/app-release.apk
+          test -f release/package/CH570-arm64-v8a.apk
+          test -f release/package/CH570-universal.apk
           tar -czf "CH570-wireless-serial-${GITHUB_REF_NAME}.tar.gz" -C release/package .
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

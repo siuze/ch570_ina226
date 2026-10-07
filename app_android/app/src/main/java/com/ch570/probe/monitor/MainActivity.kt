@@ -1,7 +1,6 @@
 package com.ch570.probe.monitor
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -36,10 +35,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             CH570ProbeMonitorTheme {
                 MainScreen(
-                    viewModel = viewModel,
-                    onExportCsv = { csvContent ->
-                        shareCsvData(csvContent)
-                    }
+                    viewModel = viewModel
                 )
             }
         }
@@ -71,19 +67,6 @@ class MainActivity : ComponentActivity() {
         } else {
             viewModel.startScan()
         }
-    }
-
-    private fun shareCsvData(content: String) {
-        if (content.isEmpty()) {
-            Toast.makeText(this, "暂无采集数据可导出", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/csv"
-            putExtra(Intent.EXTRA_SUBJECT, "CH570_Probe_Telemetry.csv")
-            putExtra(Intent.EXTRA_TEXT, content)
-        }
-        startActivity(Intent.createChooser(intent, "导出/分享遥测数据 CSV"))
     }
 
     override fun onDestroy() {

@@ -71,10 +71,10 @@ make -C app_linux
 
 ### Android 上位机
 
-GitHub Actions 使用 JDK 17 和 Gradle 8.5 执行：
+GitHub Actions 使用 JDK 17 和 Gradle 8.5 执行 ARMv8 和 Universal Release 构建：
 
 ```bash
-gradle --no-daemon :app:assembleDebug :app:assembleRelease
+gradle --no-daemon :app:assembleArm64Release :app:assembleUniversalRelease
 ```
 
 提交 `v*` 标签后，Actions 会构建 Windows、Linux、Android 和固件，并创建 GitHub Release。Release 包含：
@@ -83,8 +83,8 @@ gradle --no-daemon :app:assembleDebug :app:assembleRelease
 CH570Q-Probe.hex
 CH570Q-Dongle.hex
 CH570_Monitor.exe
-app-debug.apk
-app-release.apk
+CH570-arm64-v8a.apk
+CH570-universal.apk
 ch570mon-linux-x64
 ch570mon-linux-aarch64
 ```

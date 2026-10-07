@@ -26,8 +26,8 @@
     - 采用 Jetpack Compose Canvas 原生硬件加速实时绘制；
     - 固定静止时间轴（Stationary Time Axis，支持 10s / 30s / 60s 窗口），曲线自右向左平滑推移；
     - 电流、功率、电压三通道独立显隐控制。
-  - **标准 CSV 导出与分享**：
-    - 支持一键导出包含 `timestamp_ms,time,current_mA,voltage_V,power_mW,capacity_mAh,energy_mWh` 字段的标准 CSV 数据，可直接调用系统分享（发送给微信、邮件或保存到手机）。
+  - **轻量安装包**：
+    - Release 只构建 ARMv8 和 Universal 两个版本，移除扩展图标库并启用 R8/资源压缩。
 
 ---
 
@@ -62,8 +62,6 @@ app_android/
 ├── build.gradle.kts                     # 根项目构建脚本
 ├── settings.gradle.kts                  # 模块设置
 ├── gradle.properties                   # JVM 参数与 AndroidX 属性
-├── gradlew / gradlew.bat               # Gradle 包装器执行脚本
-├── gradle/wrapper/                     # Gradle 8.5 包装器配置
 ├── app/
 │   ├── build.gradle.kts                # 应用模块配置与依赖声明 (Compose BOM 2024.02.00)
 │   ├── proguard-rules.pro              # 混淆优化规则
@@ -71,7 +69,7 @@ app_android/
 │       ├── AndroidManifest.xml         # 蓝牙扫描与连接权限配置 (兼容 Android 6~14+)
 │       ├── res/                        # 字符串、色彩、主题与矢量图标
 │       └── java/com/ch570/probe/monitor/
-│           ├── MainActivity.kt         # 动态权限申请、UI 入口与 CSV 分享交互
+│           ├── MainActivity.kt         # 动态权限申请与 UI 入口
 │           ├── ble/
 │           │   ├── BlePacketParser.kt  # 0xFCD2 协议高兼容度双路径解码器
 │           │   └── BleScanner.kt       # 原生 BluetoothLeScanner 低延迟扫描封装
@@ -104,19 +102,16 @@ app_android/
 4. 将 Android 手机开启开发者模式并连接电脑（或使用支持 BLE 模拟的设备），点击右上角 **Run 'app'** 绿色运行按钮。
 
 ### 4.2 命令行构建 APK
-确保本地已安装 JDK 17+ 及 Android SDK，并在 `app_android` 目录下执行：
+GitHub Actions 使用 JDK 17、Gradle 8.5 构建；本地需要安装相同环境，并在 `app_android` 目录下执行：
 
 ```bash
-# Windows
-.\gradlew.bat assembleDebug
-
-# Linux / macOS
-./gradlew assembleDebug
+gradle --no-daemon :app:assembleArm64Release :app:assembleUniversalRelease
 ```
 
-生成的可调试 APK 文件位于：
+生成的 Release APK 文件位于：
 ```
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/arm64/release/
+app/build/outputs/apk/universal/release/
 ```
 
 ---

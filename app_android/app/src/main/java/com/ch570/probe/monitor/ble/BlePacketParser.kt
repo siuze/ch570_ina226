@@ -65,7 +65,8 @@ object BlePacketParser {
 
     /**
      * Decode payload starting at [offset]:
-     * - Bytes 0..3: low 17 bits signed current, high 15 bits bus voltage
+     * - Bytes 0..3: packed 32-bit value; low 17 bits are signed current
+     *   (0.125 mA/LSB), high 15 bits are bus voltage (1.25 mV/LSB)
      * - Byte 4 (optional): sequence
      */
     private fun parsePayload(data: ByteArray, offset: Int): ParsedAdvData? {

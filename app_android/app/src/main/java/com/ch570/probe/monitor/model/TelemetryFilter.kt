@@ -8,7 +8,7 @@ import kotlin.math.min
 
 /**
  * Filter and format logic for jitter-free KPI card display,
- * strictly matching docs/上位机数据显示与抗抖设计.md and app_win.
+ * strictly matching docs/上位机详细设计.md section 6 and app_win.
  */
 class TelemetryFilter {
 

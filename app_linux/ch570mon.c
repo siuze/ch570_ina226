@@ -9,7 +9,7 @@
  *   - termios 直接读写串口，ncursesw 负责 UI，除 libcurses/libm 外无依赖
  *
  * 数据来源（复用现有固件协议，无需改固件）：
- *   COM2(控制/遥测口): 读 "V:5.012V, I:123.125mA, P:617.16mW" / "RSSI:-68 dBm"
+ *   COM2(控制/遥测口): 读 "[INA] V:5.012V, I:123.125mA, P:617.16mW" / "[RSSI] -68 dBm"
  *                      / "[VER] .." / "[CFG] .."；写 "CMD:RST/BOOT/SWAP/VER?/CFG?"
  *   COM1(透传口)     : 目标板原始串口字节流，双向
  *
@@ -208,7 +208,7 @@ static int probeIsControl(const char *path) {
 /* ---------------- COM2 行解析 ---------------- */
 static void parseCtrlLine(const char *line) {
     double v, i, p;
-    int got = sscanf(line, "V:%lfV, I:%lfmA, P:%lfmW", &v, &i, &p);
+    int got = sscanf(line, "[INA] V:%lfV, I:%lfmA, P:%lfmW", &v, &i, &p);
     if (got >= 2) {
         if (got == 2) p = v * i;
         curV = v; curI = i; curP = p;
@@ -217,7 +217,12 @@ static void parseCtrlLine(const char *line) {
         return;
     }
     int r;
-    if (sscanf(line, "RSSI:%d", &r) == 1) { curRssi = r; hasRssi = 1; return; }
+    if (sscanf(line, "[RSSI] %d dBm", &r) == 1) { curRssi = r; hasRssi = 1; return; }
+
+    if (strstr(line, "[LINK]")) {
+        snprintf(lastMsg, sizeof(lastMsg), "%.*s", (int)sizeof(lastMsg) - 1, line);
+        return;
+    }
 
     if (strstr(line, "[VER]")) {
         const char *col = strchr(line, ':');

@@ -52,16 +52,17 @@ __HIGH_CODE
 typeBufSize write_buf(struct simple_buf *buf, void *src, typeBufSize *len )
 {
     uint32_t free_len,data_len;
+    uint32_t irqv;
     typeBufSize tmp_len;
 
-    PFIC_DisableAllIRQ();
+    /* The RF RX ISR is the producer and the UART ISR is the consumer.
+     * Keep pointer and length updates atomic as one operation. */
+    SYS_DisableAllIrq(&irqv);
     free_len = buf->buf_len - buf->data_len;
-    PFIC_EnableAllIRQ();
-
     if( free_len < *len )
     {
-        PRINT("#ERR\n");
         *len = 0;
+        SYS_RecoverIrq(irqv);
         return buf->data_len;
     }
     tmp_len = (buf->end - buf->write);
@@ -79,11 +80,9 @@ typeBufSize write_buf(struct simple_buf *buf, void *src, typeBufSize *len )
         __MCPY( buf->write, src, (uint8_t *)((uint8_t *)src+tmp_len) );
         buf->write += tmp_len;
     }
-    // 关闭中断
-    PFIC_DisableAllIRQ();
     data_len = buf->data_len + *len;
     buf->data_len = data_len;
-    PFIC_EnableAllIRQ();
+    SYS_RecoverIrq(irqv);
     return  data_len;
 }
 
@@ -102,15 +101,17 @@ typeBufSize read_buf( struct simple_buf *buf, void *dst, typeBufSize *len )
 {
     uint32_t writeAddr;
     uint32_t data_len;
+    uint32_t irqv;
 
-    PFIC_DisableAllIRQ();
+    /* Pair the read pointer and data length with the producer update. */
+    SYS_DisableAllIrq(&irqv);
     writeAddr = (uint32_t)buf->write;
     data_len = buf->data_len;
-    PFIC_EnableAllIRQ();
 
     if( !data_len )
     {
         *len = 0;
+        SYS_RecoverIrq(irqv);
         return 0;
     }
     if( data_len < *len )
@@ -143,10 +144,8 @@ typeBufSize read_buf( struct simple_buf *buf, void *dst, typeBufSize *len )
             buf->read += tmp_len;
         }
     }
-    // 关闭中断
-    PFIC_DisableAllIRQ();
     data_len = buf->data_len - *len;
     buf->data_len = data_len;
-    PFIC_EnableAllIRQ();
+    SYS_RecoverIrq(irqv);
     return data_len;
 }

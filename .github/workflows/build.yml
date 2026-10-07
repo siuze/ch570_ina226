@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -88,3 +89,75 @@ jobs:
         with:
           name: ch570mon-linux-${{ matrix.arch }}
           path: app_linux/ch570mon
+
+  # ------------------------------------------------------------------
+  # Android BLE monitor: build both debug and release APKs.
+  # ------------------------------------------------------------------
+  app-android:
+    name: app_android (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Build debug and release APKs
+        working-directory: app_android
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+
+      - name: Upload Android APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: CH570_Monitor-android
+          path: |
+            app_android/app/build/outputs/apk/debug/app-debug.apk
+            app_android/app/build/outputs/apk/release/app-release.apk
+
+  release:
+    name: release bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, app-win, app-linux, app-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: CH570_Monitor-windows-x64
+          path: release/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: ch570mon-linux-x64
+          path: release/linux/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ch570mon-linux-aarch64
+          path: release/linux/aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: CH570_Monitor-android
+          path: release/android
+      - name: Create release archive
+        run: |
+          mkdir -p release/package
+          cp release/firmware/*.hex release/package/
+          cp release/windows/CH570_Monitor.exe release/package/
+          cp release/android/*.apk release/package/
+          cp release/linux/x64/ch570mon release/package/ch570mon-linux-x64
+          cp release/linux/aarch64/ch570mon release/package/ch570mon-linux-aarch64
+          tar -czf "CH570-wireless-serial-${GITHUB_REF_NAME}.tar.gz" -C release/package .
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            CH570-wireless-serial-${{ github.ref_name }}.tar.gz
+            release/package/*

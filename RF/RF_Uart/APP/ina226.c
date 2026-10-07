@@ -10,16 +10,27 @@
 
 static uint32_t s_shunt_uohm = 20000;   // Default 20 mOhm (20,000 uOhm, matches R104)
 static uint16_t s_avg_cfg = INA226_AVG_16;
+static uint8_t s_i2c_delay_loops = 3;
+
+static void i2c_update_delay(void)
+{
+    uint32_t clock_hz = GetSysClock();
+    uint32_t scale = (clock_hz + 23999999u) / 24000000u;
+    if (scale == 0) scale = 1;
+    if (scale > 80) scale = 80;
+    s_i2c_delay_loops = (uint8_t)(scale * 3u);
+}
 
 /* I2C Low-level bit-bang timing for 400kHz */
 static inline void i2c_delay(void)
 {
-    /* At 24MHz HCLK, ~20-30 NOPs gives ~1-1.2us half-cycle (~400kHz) */
-    __asm volatile (
-        "nop; nop; nop; nop; nop; nop; nop; nop;\n"
-        "nop; nop; nop; nop; nop; nop; nop; nop;\n"
-        "nop; nop; nop; nop; nop; nop; nop; nop;\n"
-    );
+    uint8_t loops = s_i2c_delay_loops;
+    while (loops--)
+    {
+        __asm volatile (
+            "nop; nop; nop; nop; nop; nop; nop; nop;\n"
+        );
+    }
 }
 
 static inline void scl_high(void)
@@ -200,12 +211,27 @@ void INA226_SetConfig(uint32_t r_shunt_uohm, uint16_t avg_samples)
 
 void INA226_Init(uint32_t r_shunt_uohm, uint16_t avg_samples)
 {
+    i2c_update_delay();
     /* Configure pins: PA2 (SDA), PA3 (SCL) with internal pull-up idle HIGH */
     scl_high();
     sda_high();
     i2c_delay();
     
     INA226_SetConfig(r_shunt_uohm, avg_samples);
+}
+
+uint8_t INA226_CheckID(uint16_t *pManufID, uint16_t *pDieID)
+{
+    i2c_update_delay();
+    scl_high();
+    sda_high();
+    i2c_delay();
+
+    if (!ina226_read_reg(INA226_REG_MANUF_ID, pManufID))
+        return 0;
+    if (!ina226_read_reg(INA226_REG_DIE_ID, pDieID))
+        return 0;
+    return 1;
 }
 
 uint32_t INA226_GetShuntResistance(void)
@@ -226,19 +252,21 @@ uint8_t INA226_ReadData(ina226_data_t *pData)
     pData->shunt_raw = (int16_t)vshunt_raw;
     pData->bus_raw = vbus_raw;
     
-    /* Bus Voltage: 1.25 mV / LSB -> mV = raw * 5 / 4 */
-    pData->bus_mv = ((uint32_t)vbus_raw * 5) / 4;
+    /* Preserve the native 1.25 mV quantisation for BLE and text conversion. */
+    pData->bus_uv = (uint32_t)vbus_raw * 1250u;
+    pData->bus_mv = pData->bus_uv / 1000u;
     
-    /* Shunt Voltage: 2.5 uV / LSB -> Shunt_uV = raw * 25 / 10 = raw * 5 / 2 */
-    int32_t shunt_uv = ((int32_t)pData->shunt_raw * 5) / 2;
-    
-    /* Current (mA) = (Shunt_uV * 1000) / s_shunt_uohm */
+    /* Current (uA) = raw * 2.5uV * 1,000,000 / R_uOhm. */
     if (s_shunt_uohm > 0)
     {
-        pData->current_ma = (int32_t)(((int64_t)shunt_uv * 1000) / s_shunt_uohm);
+        int64_t current_ua = ((int64_t)pData->shunt_raw * 2500000LL) /
+                             (int64_t)s_shunt_uohm;
+        pData->current_ua = (int32_t)current_ua;
+        pData->current_ma = (int32_t)(current_ua / 1000);
     }
     else
     {
+        pData->current_ua = 0;
         pData->current_ma = 0;
     }
     

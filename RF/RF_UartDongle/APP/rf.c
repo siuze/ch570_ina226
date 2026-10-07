@@ -246,7 +246,6 @@ void RFRole_Init(void)
         Properties.bitOrderData = DATA_ORDER;
         Properties.crcXOREnable = CRC_XOR_EN;
 #endif
-        PRINT("cfgVal=%x\n",Properties.cfgVal);
     }
 
     // TX相关参数，全局变量
@@ -258,7 +257,7 @@ void RFRole_Init(void)
         gTxParam.crcPoly = CRC_POLY;
         gTxParam.properties = Properties.cfgVal;
         gTxParam.waitTime = 80*2;
-        gTxParam.txPowerVal = LL_TX_POWEER_0_DBM;
+        gTxParam.txPowerVal = LL_TX_POWEER_7_DBM;
     }
 
     // RX相关参数，全局变量

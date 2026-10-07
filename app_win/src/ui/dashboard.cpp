@@ -8,6 +8,15 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <windows.h>
+#include <commdlg.h>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <ctime>
+
+#pragma comment(lib, "comdlg32.lib")
 
 namespace CH570App {
 
@@ -29,7 +38,7 @@ static std::string FormatMaxDigits(double val, int maxDigits) {
     return std::string(buf);
 }
 
-static std::string Format5SlotDseg(double val) {
+static std::string Format5SlotDseg(double val, int decimalsUnder100 = 2, int slotCount = 5) {
     if (std::isnan(val) || std::isinf(val)) return "    0";
     bool neg = (val < -0.0001);
     double absVal = std::abs(val);
@@ -41,6 +50,8 @@ static std::string Format5SlotDseg(double val) {
         snprintf(numBuf, sizeof(numBuf), "%.1f", absVal);
     } else if (absVal >= 100.0) {
         snprintf(numBuf, sizeof(numBuf), "%.2f", absVal);
+    } else if (absVal < 100.0 && decimalsUnder100 >= 3) {
+        snprintf(numBuf, sizeof(numBuf), "%.3f", absVal);
     } else {
         snprintf(numBuf, sizeof(numBuf), "%.2f", absVal);
     }
@@ -51,7 +62,7 @@ static std::string Format5SlotDseg(double val) {
     }
     if (neg) digitCount++;
 
-    int padCount = 5 - digitCount;
+    int padCount = slotCount - digitCount;
     if (padCount < 0) padCount = 0;
 
     std::string res;
@@ -64,6 +75,32 @@ static std::string Format5SlotDseg(double val) {
     return res;
 }
 
+static double MedianRecent(const std::array<TelemetryPoint, 3>& samples,
+                           size_t count, double TelemetryPoint::*member) {
+    if (count == 0) return 0.0;
+    double values[3]{};
+    for (size_t i = 0; i < count; ++i) values[i] = samples[i].*member;
+    std::sort(values, values + count);
+    return values[count / 2];
+}
+
+static bool PickHexFile(std::string& outPath) {
+    wchar_t path[MAX_PATH * 4]{};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = static_cast<DWORD>(std::size(path));
+    ofn.lpstrFilter = L"Intel HEX (*.hex)\0*.hex\0All files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return false;
+    outPath.resize(static_cast<size_t>(n - 1));
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, outPath.data(), n, nullptr, nullptr);
+    return true;
+}
+
 Dashboard::Dashboard(BleScanner& bleScanner)
     : m_bleScanner(bleScanner) {
     memset(m_com1SendBuffer, 0, sizeof(m_com1SendBuffer));
@@ -71,10 +108,83 @@ Dashboard::Dashboard(BleScanner& bleScanner)
 
     // Default time window to 30s as requested by user
     AppState::Instance().timeWindowSeconds = 30.0f;
-    m_relTime.reserve(15000);
+    m_relTime.reserve(12000);
+    m_current_plot.reserve(12000);
+    m_power_plot.reserve(12000);
+    m_voltage_mv.reserve(12000);
+}
+
+Dashboard::~Dashboard() {
+    CloseCsv();
+}
+
+void Dashboard::CloseCsv() {
+    if (m_csvFile.is_open()) m_csvFile.close();
+    m_csvPath.clear();
+    m_csvHourKey.clear();
+}
+
+bool Dashboard::OpenCsvForCurrentHour(const std::tm& localTm, long long epochMs) {
+    char hourKey[32]{};
+    std::strftime(hourKey, sizeof(hourKey), "%Y%m%d%H", &localTm);
+    if (m_csvFile.is_open() && m_csvHourKey == hourKey) return true;
+
+    CloseCsv();
+    char fileStamp[32]{};
+    std::strftime(fileStamp, sizeof(fileStamp), "%Y%m%d%H%M%S", &localTm);
+    char exePath[MAX_PATH * 4]{};
+    DWORD len = GetModuleFileNameA(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+    std::filesystem::path base = (len > 0) ? std::filesystem::path(exePath).parent_path()
+                                           : std::filesystem::current_path();
+    std::error_code ec;
+    std::filesystem::create_directories(base / "csv", ec);
+    std::filesystem::path path = base / "csv" / (std::string("record_") + fileStamp + ".csv");
+    m_csvFile.open(path, std::ios::out | std::ios::app);
+    if (!m_csvFile.is_open()) return false;
+    m_csvHourKey = hourKey;
+    m_csvPath = path.string();
+    if (m_csvFile.tellp() == std::streampos(0)) {
+        m_csvFile << "timestamp_ms,time,current_mA,voltage_V,power_mW,capacity_mAh,energy_mWh\n";
+    }
+    (void)epochMs;
+    return true;
+}
+
+void Dashboard::ExportLatestCsvIfDue() {
+    static const double intervals[] = {0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0};
+    if (!m_csvEnabled) {
+        if (m_csvFile.is_open()) CloseCsv();
+        return;
+    }
+
+    TelemetryPoint pt{};
+    double ah = 0.0, wh = 0.0;
+    if (!AppState::Instance().history.GetLatest(pt, ah, wh)) return;
+    if (m_csvLastSampleTimestamp >= 0.0 &&
+        pt.timestamp - m_csvLastSampleTimestamp + 1e-9 < intervals[m_csvIntervalIndex]) return;
+
+    const auto now = std::chrono::system_clock::now();
+    const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm localTm{};
+    localtime_s(&localTm, &tt);
+    if (!OpenCsvForCurrentHour(localTm, epochMs)) return;
+
+    char timeBuf[40]{};
+    auto ms = epochMs % 1000;
+    std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &localTm);
+    m_csvFile << epochMs << "," << timeBuf << "." << std::setfill('0') << std::setw(3) << ms
+              << "," << std::fixed << std::setprecision(3) << pt.current_ma
+              << "," << std::setprecision(6) << pt.voltage_v
+              << "," << std::setprecision(3) << pt.power_mw
+              << "," << std::setprecision(6) << ah * 1000.0
+              << "," << std::setprecision(6) << wh * 1000.0 << "\n";
+    m_csvFile.flush();
+    m_csvLastSampleTimestamp = pt.timestamp;
 }
 
 void Dashboard::Render() {
+    SerialManager::Instance().ServiceAutoReconnect();
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
@@ -95,6 +205,23 @@ void Dashboard::Render() {
     RenderWaveform();
     UIStyle::DrawCenteredDivider(5.0f);
     RenderBottomTabs();
+
+    // Keep firmware and application versions out of the status bar.  The
+    // compact footer stays visible without consuming layout space.
+    {
+        auto& state = AppState::Instance();
+        std::string dongleVer, probeVer;
+        state.GetFwVersions(dongleVer, probeVer);
+        if (dongleVer.empty()) dongleVer = "未知";
+        if (probeVer.empty()) probeVer = "未知";
+        const std::string footer = "Dongle " + dongleVer + " | Probe " + probeVer + " | 上位机 v2.0";
+        const float footerSize = 16.0f;
+        const ImVec2 footerSizePx = g_FontDefault->CalcTextSizeA(footerSize, FLT_MAX, 0.0f, footer.c_str());
+        ImGui::GetForegroundDrawList()->AddText(g_FontDefault, footerSize,
+            ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - footerSizePx.x - 12.0f,
+                   viewport->WorkPos.y + viewport->WorkSize.y - 22.0f),
+            IM_COL32(120, 120, 120, 220), footer.c_str());
+    }
 
     ImGui::End();
 }
@@ -136,7 +263,7 @@ void Dashboard::RenderStatusBar() {
         curX += ImGui::CalcTextSize("BLE 监听中").x + 8.0f;
 
         ImGui::SetCursorScreenPos(ImVec2(curX, btnY));
-        if (UIStyle::TactileButton("停止 BLE", ImVec2(68, btnH), IM_COL32(255, 240, 240, 255), IM_COL32(196, 43, 28, 255), IM_COL32(248, 215, 218, 255), 4.0f)) {
+        if (UIStyle::TactileButton("停止", ImVec2(68, btnH), IM_COL32(255, 240, 240, 255), IM_COL32(196, 43, 28, 255), IM_COL32(248, 215, 218, 255), 4.0f)) {
             m_bleScanner.Stop();
         }
         curX += 68.0f + 8.0f;
@@ -151,7 +278,7 @@ void Dashboard::RenderStatusBar() {
         curX += ImGui::CalcTextSize("BLE 停止").x + 8.0f;
 
         ImGui::SetCursorScreenPos(ImVec2(curX, btnY));
-        if (UIStyle::TactileButton("启动 BLE", ImVec2(68, btnH), IM_COL32(239, 249, 240, 255), IM_COL32(15, 123, 15, 255), IM_COL32(196, 232, 197, 255), 4.0f)) {
+        if (UIStyle::TactileButton("启动", ImVec2(68, btnH), IM_COL32(239, 249, 240, 255), IM_COL32(15, 123, 15, 255), IM_COL32(196, 232, 197, 255), 4.0f)) {
             m_bleScanner.Start();
         }
         curX += 68.0f + 8.0f;
@@ -189,39 +316,27 @@ void Dashboard::RenderStatusBar() {
     curX += 68.0f + 8.0f;
 
     char dongleStatsBuf[64];
-    if (state.dongleRssiValid.load()) {
-        snprintf(dongleStatsBuf, sizeof(dongleStatsBuf), "| 2.4G 信号: %d dBm | 遥测: %llu 帧",
-                 state.dongleRssi.load(),
-                 (unsigned long long)state.donglePacketCount.load());
+    const double nowElapsed = state.GetElapsedSeconds();
+    const bool probeConnected = state.dongleConnected.load() &&
+        (nowElapsed - state.dongleLastTimestamp) < 3.0;
+    const bool probeRssiFresh = state.dongleRssiValid.load() &&
+        (nowElapsed - state.dongleLastRssiTimestamp) < 5.0 && state.dongleRssi.load() < 0;
+    if (probeConnected) {
+        if (probeRssiFresh) {
+            snprintf(dongleStatsBuf, sizeof(dongleStatsBuf), "| Probe 信号: %d dBm | 遥测: %llu 帧",
+                     state.dongleRssi.load(),
+                     (unsigned long long)state.donglePacketCount.load());
+        } else {
+            snprintf(dongleStatsBuf, sizeof(dongleStatsBuf), "| Probe 已连接 | 信号等待 | 遥测: %llu 帧",
+                     (unsigned long long)state.donglePacketCount.load());
+        }
     } else {
-        snprintf(dongleStatsBuf, sizeof(dongleStatsBuf), "| 2.4G 信号: -- dBm | 遥测: %llu 帧",
+        snprintf(dongleStatsBuf, sizeof(dongleStatsBuf), "| Probe 未连接 | 遥测: %llu 帧",
                  (unsigned long long)state.donglePacketCount.load());
     }
     ImGui::SetCursorScreenPos(ImVec2(curX, textY));
-    ImGui::TextColored(UIStyle::ColorTextMuted(), "%s", dongleStatsBuf);
+    ImGui::TextColored(probeConnected ? UIStyle::ColorTextMuted() : UIStyle::ColorDanger(), "%s", dongleStatsBuf);
     curX += ImGui::CalcTextSize(dongleStatsBuf).x + 16.0f;
-
-    // 2b. Firmware version (auto-queried via CMD:VER? after COM2 connects)
-    {
-        std::string dongleVer, probeVer;
-        state.GetFwVersions(dongleVer, probeVer);
-        bool probeOk = !probeVer.empty() && probeVer.find("not connected") == std::string::npos;
-        char fwBuf[128];
-        fwBuf[0] = '\0';
-        if (probeOk && !dongleVer.empty()) {
-            if (dongleVer == probeVer)
-                snprintf(fwBuf, sizeof(fwBuf), "| 固件 %s", dongleVer.c_str());
-            else
-                snprintf(fwBuf, sizeof(fwBuf), "| 固件 D:%s P:%s", dongleVer.c_str(), probeVer.c_str());
-        } else if (!dongleVer.empty()) {
-            snprintf(fwBuf, sizeof(fwBuf), "| 固件 %s", dongleVer.c_str());
-        }
-        if (fwBuf[0] != '\0') {
-            ImGui::SetCursorScreenPos(ImVec2(curX, textY));
-            ImGui::TextColored(UIStyle::ColorTextMuted(), "%s", fwBuf);
-            curX += ImGui::CalcTextSize(fwBuf).x + 16.0f;
-        }
-    }
 
     // 3. COM1 Passthrough Status (Aligned to ~76% of bar width)
     float com1StartX = p_min.x + barWidth * 0.76f;
@@ -259,9 +374,54 @@ void Dashboard::RenderKpiCards() {
         pStats = state.history.GetPStats();
     }
 
+    // Display-only filtering: three-sample median rejects one-packet spikes,
+    // then an EMA advances from telemetry timestamps (tau ~= 0.8 s).  This
+    // keeps rendering cadence from changing the numeric response.
+    std::array<TelemetryPoint, 3> recent{};
+    const size_t recentCount = state.history.GetRecent(recent);
+    if (recentCount > 0) {
+        const double newestTs = recent[recentCount - 1].timestamp;
+        if (newestTs != m_filterLastSampleTimestamp) {
+            const double medianCurrent = MedianRecent(recent, recentCount, &TelemetryPoint::current_ma);
+            const double medianPower = MedianRecent(recent, recentCount, &TelemetryPoint::power_mw);
+            const double medianVoltage = MedianRecent(recent, recentCount, &TelemetryPoint::voltage_v);
+            if (!m_smoothInitialized || newestTs < m_filterLastSampleTimestamp) {
+                m_smoothCurrent = medianCurrent;
+                m_smoothPower = medianPower;
+                m_smoothVoltage = medianVoltage;
+                m_smoothInitialized = true;
+            } else {
+                const double dt = (std::clamp)(newestTs - m_filterLastSampleTimestamp, 0.01, 2.0);
+                const double alpha = 1.0 - std::exp(-dt / 0.8);
+                m_smoothCurrent += (medianCurrent - m_smoothCurrent) * alpha;
+                m_smoothPower += (medianPower - m_smoothPower) * alpha;
+                m_smoothVoltage += (medianVoltage - m_smoothVoltage) * alpha;
+            }
+            m_filterLastSampleTimestamp = newestTs;
+        }
+    }
+
+    // Unit hysteresis prevents a threshold crossing from changing units back
+    // and forth. Enter at the requested value, leave with a 10% margin.
+    const double currentAbs = std::abs(m_smoothCurrent);
+    const double powerAbs = std::abs(m_smoothPower);
+    const double voltageAbs = std::abs(m_smoothVoltage);
+    if (m_currentInA ? currentAbs < 1350.0 : currentAbs >= 1500.0) m_currentInA = !m_currentInA;
+    if (m_powerInW ? powerAbs < 850.0 : powerAbs >= 1000.0) m_powerInW = !m_powerInW;
+    if (m_voltageInV ? voltageAbs < 1.8 : voltageAbs >= 2.0) m_voltageInV = !m_voltageInV;
+    const bool currentInA = m_currentInA;
+    const bool powerInW = m_powerInW;
+    const bool voltageInV = m_voltageInV;
+    const double currentScale = currentInA ? 0.001 : 1.0;
+    const double powerScale = powerInW ? 0.001 : 1.0;
+    const double voltageScale = voltageInV ? 1.0 : 1000.0;
+    const char* currentUnit = currentInA ? "A" : "mA";
+    const char* powerUnit = powerInW ? "W" : "mW";
+    const char* voltageUnit = voltageInV ? "V" : "mV";
+
     float availWidth = ImGui::GetContentRegionAvail().x;
     float spacing = ImGui::GetStyle().ItemSpacing.x;
-    // 4 cards layout: 1. Current, 2. Power, 3. Voltage (mV), 4. Capacity & Energy (Ah / Wh)
+    // 4 cards layout: 1. Current, 2. Power, 3. Voltage (mV), 4. Capacity & Energy (mAh / mWh)
     float cardWidth = (availWidth - 3.0f * spacing) / 4.0f;
     float cardHeight = 108.0f;
 
@@ -310,7 +470,7 @@ void Dashboard::RenderKpiCards() {
             ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "88888");
 
             // Active 5-slot 7-segment numerical value
-            std::string dsegStr = Format5SlotDseg(iStats.current);
+            std::string dsegStr = Format5SlotDseg(m_smoothCurrent * currentScale, 3);
             ImGui::SetCursorScreenPos(ImVec2(contentX, contentY));
             ImGui::TextColored(UIStyle::ColorTextMain(), "%s", dsegStr.c_str());
             ImGui::PopFont();
@@ -318,12 +478,12 @@ void Dashboard::RenderKpiCards() {
             // 100% Fixed Unit Position (never jumps)
             ImGui::SetCursorScreenPos(ImVec2(contentX + unitOffsetLarge, contentY + baselineOffset));
             ImGui::PushFont(g_FontOswaldMedium);
-            ImGui::TextColored(UIStyle::ColorCurrent(), "mA");
+            ImGui::TextColored(UIStyle::ColorCurrent(), "%s", currentUnit);
             ImGui::PopFont();
 
             // Right-aligned gray rolling min/max stats with guaranteed right margin & bottom clearance
-            std::string minStr = "min: " + FormatMaxDigits(iStats.min_val, 4);
-            std::string maxStr = "max: " + FormatMaxDigits(iStats.max_val, 4);
+            std::string minStr = "min: " + FormatMaxDigits(iStats.min_val * currentScale, 4);
+            std::string maxStr = "max: " + FormatMaxDigits(iStats.max_val * currentScale, 4);
 
             ImGui::PushFont(g_FontOswaldMedium);
             float wMin = ImGui::CalcTextSize(minStr.c_str()).x;
@@ -367,7 +527,7 @@ void Dashboard::RenderKpiCards() {
             ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "88888");
 
             // Active 5-slot 7-segment numerical value
-            std::string dsegStr = Format5SlotDseg(pStats.current);
+            std::string dsegStr = Format5SlotDseg(m_smoothPower * powerScale, powerInW ? 3 : 2);
             ImGui::SetCursorScreenPos(ImVec2(contentX, contentY));
             ImGui::TextColored(UIStyle::ColorTextMain(), "%s", dsegStr.c_str());
             ImGui::PopFont();
@@ -375,12 +535,12 @@ void Dashboard::RenderKpiCards() {
             // 100% Fixed Unit Position (never jumps)
             ImGui::SetCursorScreenPos(ImVec2(contentX + unitOffsetLarge, contentY + baselineOffset));
             ImGui::PushFont(g_FontOswaldMedium);
-            ImGui::TextColored(UIStyle::ColorPower(), "mW");
+            ImGui::TextColored(UIStyle::ColorPower(), "%s", powerUnit);
             ImGui::PopFont();
 
             // Right-aligned gray rolling min/max stats with guaranteed right margin & bottom clearance
-            std::string minStr = "min: " + FormatMaxDigits(pStats.min_val, 4);
-            std::string maxStr = "max: " + FormatMaxDigits(pStats.max_val, 4);
+            std::string minStr = "min: " + FormatMaxDigits(pStats.min_val * powerScale, 4);
+            std::string maxStr = "max: " + FormatMaxDigits(pStats.max_val * powerScale, 4);
 
             ImGui::PushFont(g_FontOswaldMedium);
             float wMin = ImGui::CalcTextSize(minStr.c_str()).x;
@@ -418,9 +578,9 @@ void Dashboard::RenderKpiCards() {
             float contentX = p_min.x + 14.0f;
             float contentY = p_min.y + 46.0f;
 
-            double mv_cur = vStats.current * 1000.0;
-            double mv_min = vStats.min_val * 1000.0;
-            double mv_max = vStats.max_val * 1000.0;
+            double mv_cur = m_smoothVoltage * voltageScale;
+            double mv_min = vStats.min_val * voltageScale;
+            double mv_max = vStats.max_val * voltageScale;
 
             // Faint 7-segment unlit LCD background
             ImGui::SetCursorScreenPos(ImVec2(contentX, contentY));
@@ -428,7 +588,7 @@ void Dashboard::RenderKpiCards() {
             ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "88888");
 
             // Active 5-slot 7-segment numerical value
-            std::string dsegStr = Format5SlotDseg(mv_cur);
+            std::string dsegStr = Format5SlotDseg(mv_cur, voltageInV ? 3 : 2);
             ImGui::SetCursorScreenPos(ImVec2(contentX, contentY));
             ImGui::TextColored(UIStyle::ColorTextMain(), "%s", dsegStr.c_str());
             ImGui::PopFont();
@@ -436,7 +596,7 @@ void Dashboard::RenderKpiCards() {
             // 100% Fixed Unit Position (never jumps)
             ImGui::SetCursorScreenPos(ImVec2(contentX + unitOffsetLarge, contentY + baselineOffset));
             ImGui::PushFont(g_FontOswaldMedium);
-            ImGui::TextColored(UIStyle::ColorVoltage(), "mV");
+            ImGui::TextColored(UIStyle::ColorVoltage(), "%s", voltageUnit);
             ImGui::PopFont();
 
             // Right-aligned gray rolling min/max stats with guaranteed right margin & bottom clearance
@@ -462,7 +622,7 @@ void Dashboard::RenderKpiCards() {
 
     ImGui::SameLine();
 
-    // --- Card 4: Capacity & Energy Statistics (电量累计, Ah / Wh) ---
+    // --- Card 4: Capacity & Energy Statistics (电量累计, mAh / mWh) ---
     {
         ImVec2 p_min = ImGui::GetCursorScreenPos();
         ImVec2 p_max = ImVec2(p_min.x + cardWidth, p_min.y + cardHeight);
@@ -476,39 +636,39 @@ void Dashboard::RenderKpiCards() {
             ImDrawList* drawList = ImGui::GetWindowDrawList();
             renderCardHeader(drawList, p_min, p_max, "电量累计", "CAPACITY & ENERGY", UIStyle::ColorEnergy(), IM_COL32(79, 70, 229, 180));
 
-            double ah = state.history.GetAccumulatedAh();
-            double wh = state.history.GetAccumulatedWh();
+            double ah = state.history.GetAccumulatedAh() * 1000.0;
+            double wh = state.history.GetAccumulatedWh() * 1000.0;
 
             float contentX = p_min.x + 16.0f;
-            float slot5W_med = g_FontDsegMedium->CalcTextSizeA(g_FontDsegMedium->LegacySize, FLT_MAX, 0.0f, "88888").x;
+            float slot5W_med = g_FontDsegMedium->CalcTextSizeA(g_FontDsegMedium->LegacySize, FLT_MAX, 0.0f, "888888").x;
             float unitOffsetMed = slot5W_med + 8.0f;
 
-            // Upper Line: Ah (DSEG Medium 5-slot + Fixed Unit)
+            // Upper Line: mAh (DSEG Medium 5-slot + Fixed Unit)
             ImGui::SetCursorScreenPos(ImVec2(contentX, p_min.y + 45.0f));
             ImGui::PushFont(g_FontDsegMedium);
-            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "88888");
+            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "888888");
             ImGui::SetCursorScreenPos(ImVec2(contentX, p_min.y + 45.0f));
-            std::string ahStr = Format5SlotDseg(ah);
+            std::string ahStr = Format5SlotDseg(ah, 3, 6);
             ImGui::TextColored(UIStyle::ColorTextMain(), "%s", ahStr.c_str());
             ImGui::PopFont();
 
             ImGui::SetCursorScreenPos(ImVec2(contentX + unitOffsetMed, p_min.y + 46.0f));
             ImGui::PushFont(g_FontOswaldMedium);
-            ImGui::TextColored(UIStyle::ColorEnergy(), "Ah");
+            ImGui::TextColored(UIStyle::ColorEnergy(), "mAh");
             ImGui::PopFont();
 
-            // Lower Line: Wh (DSEG Medium 5-slot + Fixed Unit)
+            // Lower Line: mWh (DSEG Medium 5-slot + Fixed Unit)
             ImGui::SetCursorScreenPos(ImVec2(contentX, p_min.y + 73.0f));
             ImGui::PushFont(g_FontDsegMedium);
-            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "88888");
+            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.07f), "888888");
             ImGui::SetCursorScreenPos(ImVec2(contentX, p_min.y + 73.0f));
-            std::string whStr = Format5SlotDseg(wh);
+            std::string whStr = Format5SlotDseg(wh, 3, 6);
             ImGui::TextColored(UIStyle::ColorTextMain(), "%s", whStr.c_str());
             ImGui::PopFont();
 
             ImGui::SetCursorScreenPos(ImVec2(contentX + unitOffsetMed, p_min.y + 74.0f));
             ImGui::PushFont(g_FontOswaldMedium);
-            ImGui::TextColored(UIStyle::ColorEnergy(), "Wh");
+            ImGui::TextColored(UIStyle::ColorEnergy(), "mWh");
             ImGui::PopFont();
         }
 
@@ -526,6 +686,7 @@ void Dashboard::RenderKpiCards() {
 void Dashboard::RenderWaveform() {
     auto& state = AppState::Instance();
     float spacing = ImGui::GetStyle().ItemSpacing.x;
+    ExportLatestCsvIfDue();
 
     // --- Waveform Toolbar ---
     {
@@ -543,11 +704,10 @@ void Dashboard::RenderWaveform() {
         }
 
         ImGui::SameLine(0, 10.0f);
-        ImVec2 twPos = ImGui::GetCursorScreenPos();
-        ImGui::SetCursorScreenPos(ImVec2(twPos.x, twPos.y + (24.0f - ImGui::GetTextLineHeight()) * 0.5f));
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(UIStyle::ColorTextMuted(), "时间窗口:");
         ImGui::SameLine(0, 8.0f);
-        // Modern Segmented Control: [ 30s | 1min | 2min | 5min | 10min | 30min | 1h ]
+        // Keep the control compact while covering short and long measurements.
         struct TimeOpt { const char* label; float sec; float width; };
         static const TimeOpt s_timeOpts[] = {
             { "30s",   30.0f,   46.0f },
@@ -556,7 +716,9 @@ void Dashboard::RenderWaveform() {
             { "5min",  300.0f,  50.0f },
             { "10min", 600.0f,  56.0f },
             { "30min", 1800.0f, 56.0f },
-            { "1h",    3600.0f, 46.0f }
+            { "1h",    3600.0f, 46.0f },
+            { "2h",    7200.0f, 46.0f },
+            { "4h",    14400.0f, 46.0f }
         };
         for (size_t k = 0; k < IM_ARRAYSIZE(s_timeOpts); ++k) {
             if (k > 0) ImGui::SameLine(0, 6.0f);
@@ -564,6 +726,21 @@ void Dashboard::RenderWaveform() {
                 state.timeWindowSeconds = s_timeOpts[k].sec;
             }
         }
+
+        ImGui::SameLine(0, 18.0f);
+        const bool csvWasEnabled = m_csvEnabled;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::Checkbox("导出CSV", &m_csvEnabled);
+        ImGui::PopStyleVar();
+        if (m_csvEnabled != csvWasEnabled) {
+            m_csvLastSampleTimestamp = -1.0;
+            if (!m_csvEnabled) CloseCsv();
+        }
+        ImGui::SameLine(0, 6.0f);
+        static const char* csvIntervals[] = { "0.1s", "0.5s", "1s", "2s", "5s", "10s", "30s", "60s" };
+        ImGui::SetNextItemWidth(82.0f);
+        ImGui::Combo("##CsvInterval", &m_csvIntervalIndex, csvIntervals, IM_ARRAYSIZE(csvIntervals));
 
         // Channel Radio Toggles: 电流, 功率, 电压 (No pill box, No units, Radio style)
         float totalRightW = 200.0f;
@@ -584,7 +761,11 @@ void Dashboard::RenderWaveform() {
     ImPlotStyle& pstyle = ImPlot::GetStyle();
     pstyle.PlotPadding = ImVec2(10.0f, 10.0f);
 
-    if (ImPlot::BeginPlot("##WaveformPlot", ImVec2(-1, plotHeight), ImPlotFlags_NoMouseText)) {
+    MetricStats chartV, chartI, chartP;
+    state.history.GetWindowStats(state.timeWindowSeconds, chartV, chartI, chartP);
+    const double voltageMax = (std::max)(1000.0, chartV.count > 0 ? chartV.max_val * 1000.0 * 1.15 : 6000.0);
+
+    if (ImPlot::BeginPlot("##WaveformPlot", ImVec2(-1, plotHeight), ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend)) {
         // X-Axis: Remove bottom text, display clean relative seconds from -window to 0s
         double window = state.timeWindowSeconds;
         ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
@@ -605,7 +786,7 @@ void Dashboard::RenderWaveform() {
 
             ImPlot::SetupAxisLimits(ImAxis_Y1, -50.0, 1000.0, condY1);
             ImPlot::SetupAxisLimits(ImAxis_Y2, -50.0, 3500.0, condY2);
-            ImPlot::SetupAxisLimits(ImAxis_Y3, 0.0, 6000.0, condY3);
+            ImPlot::SetupAxisLimits(ImAxis_Y3, 0.0, voltageMax, condY3);
         } else if (state.showCurrent && state.showPower) {
             ImPlot::SetupAxis(ImAxis_Y1, "电流 (mA)", ImPlotAxisFlags_None);
             ImPlot::SetupAxis(ImAxis_Y2, "功率 (mW)", ImPlotAxisFlags_AuxDefault);
@@ -617,13 +798,13 @@ void Dashboard::RenderWaveform() {
             ImPlot::SetupAxis(ImAxis_Y2, "电压 (mV)", ImPlotAxisFlags_AuxDefault);
 
             ImPlot::SetupAxisLimits(ImAxis_Y1, -50.0, 1000.0, condY1);
-            ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, 6000.0, condY2);
+            ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, voltageMax, condY2);
         } else if (state.showPower && state.showVoltage) {
             ImPlot::SetupAxis(ImAxis_Y1, "功率 (mW)", ImPlotAxisFlags_None);
             ImPlot::SetupAxis(ImAxis_Y2, "电压 (mV)", ImPlotAxisFlags_AuxDefault);
 
             ImPlot::SetupAxisLimits(ImAxis_Y1, -50.0, 3500.0, condY1);
-            ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, 6000.0, condY2);
+            ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, voltageMax, condY2);
         } else if (state.showCurrent) {
             ImPlot::SetupAxis(ImAxis_Y1, "电流 (mA)", ImPlotAxisFlags_None);
             ImPlot::SetupAxisLimits(ImAxis_Y1, -50.0, 1000.0, condY1);
@@ -632,7 +813,7 @@ void Dashboard::RenderWaveform() {
             ImPlot::SetupAxisLimits(ImAxis_Y1, -50.0, 3500.0, condY1);
         } else if (state.showVoltage) {
             ImPlot::SetupAxis(ImAxis_Y1, "电压 (mV)", ImPlotAxisFlags_None);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 6000.0, condY1);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, voltageMax, condY1);
         }
 
         state.resetY1 = false;
@@ -646,13 +827,28 @@ void Dashboard::RenderWaveform() {
         const auto& p = state.history.GetPower();
 
         if (!t.empty()) {
-            int count = static_cast<int>(t.size());
+            /* Draw at most 12k points.  The stored samples and CSV remain
+             * lossless; this only bounds ImPlot work for multi-hour views. */
             double curTime = state.GetElapsedSeconds();
+            const double cutoff = curTime - window;
+            size_t first = 0;
+            while (first < t.size() && t[first] < cutoff) ++first;
+            if (first >= t.size()) first = t.size() - 1;
+            const size_t visible = t.size() - first;
+            const size_t stride = (visible + 11999u) / 12000u;
+            const size_t countSize = (visible + stride - 1u) / stride;
+            const int count = static_cast<int>(countSize);
 
-            // Map absolute timestamps to [-window, 0.0] so newest is at 0.0s (right)
-            m_relTime.resize(count);
-            for (int k = 0; k < count; ++k) {
-                m_relTime[k] = t[k] - curTime;
+            m_relTime.resize(countSize);
+            m_current_plot.resize(countSize);
+            m_power_plot.resize(countSize);
+            m_voltage_mv.resize(countSize);
+            for (size_t k = 0; k < countSize; ++k) {
+                const size_t source = (std::min)(first + k * stride, t.size() - 1u);
+                m_relTime[k] = t[source] - curTime;
+                m_current_plot[k] = i[source];
+                m_power_plot[k] = p[source];
+                m_voltage_mv[k] = v[source] * 1000.0;
             }
 
             // 1. Current (Rich Emerald #059669)
@@ -661,7 +857,7 @@ void Dashboard::RenderWaveform() {
                 ImPlotSpec spec;
                 spec.LineColor = UIStyle::ColorCurrent();
                 spec.LineWeight = 2.0f;
-                ImPlot::PlotLine("电流 (mA)", m_relTime.data(), i.data(), count, spec);
+                ImPlot::PlotLine("电流 (mA)", m_relTime.data(), m_current_plot.data(), count, spec);
             }
 
             // 2. Power (Warm Amber #D97706)
@@ -671,7 +867,7 @@ void Dashboard::RenderWaveform() {
                 ImPlotSpec spec;
                 spec.LineColor = UIStyle::ColorPower();
                 spec.LineWeight = 1.8f;
-                ImPlot::PlotLine("功率 (mW)", m_relTime.data(), p.data(), count, spec);
+                ImPlot::PlotLine("功率 (mW)", m_relTime.data(), m_power_plot.data(), count, spec);
             }
 
             // 3. Voltage in mV (Azure Sky #0284C7)
@@ -682,10 +878,6 @@ void Dashboard::RenderWaveform() {
                 spec.LineColor = UIStyle::ColorVoltage();
                 spec.LineWeight = 1.8f;
 
-                m_voltage_mv.resize(count);
-                for (int k = 0; k < count; ++k) {
-                    m_voltage_mv[k] = v[k] * 1000.0;
-                }
                 ImPlot::PlotLine("电压 (mV)", m_relTime.data(), m_voltage_mv.data(), count, spec);
             }
         }
@@ -703,28 +895,21 @@ void Dashboard::RenderWaveform() {
 }
 
 void Dashboard::RenderBottomTabs() {
-    static int s_initialTab = -1;
-    if (s_initialTab == -1) {
-        const char* envTab = getenv("CH570_SELECT_TAB");
-        s_initialTab = envTab ? atoi(envTab) : 0;
-    }
-
     if (ImGui::BeginTabBar("BottomTabBar", ImGuiTabBarFlags_None)) {
-        ImGuiTabItemFlags f0 = (s_initialTab == 0) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        ImGuiTabItemFlags f1 = (s_initialTab == 1) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        ImGuiTabItemFlags f2 = (s_initialTab == 2) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-        s_initialTab = -2; // only apply once on startup
-
-        if (ImGui::BeginTabItem("  硬件遥控与交互 (Dongle & Probe Control)  ", nullptr, f0)) {
+        if (ImGui::BeginTabItem("  硬件遥控与交互 (Dongle & Probe Control)  ")) {
             RenderControlAndLogTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("  数据串口穿透 (COM1 Target MCU)  ", nullptr, f1)) {
+        if (ImGui::BeginTabItem("  数据串口穿透 (COM1 Target MCU)  ")) {
             RenderCom1TerminalTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("  BLE 广播与协议诊断 (Beacon Diagnostics)  ", nullptr, f2)) {
+        if (ImGui::BeginTabItem("  链路功能诊断 (Link Diagnostics)  ")) {
             RenderBleDiagnosticsTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("  固件维护 (Firmware)  ")) {
+            RenderFirmwareTab();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -783,27 +968,64 @@ void Dashboard::RenderControlAndLogTab() {
 
         static const char* const rateLabels[] = { "10 ms (100 Hz)", "20 ms (50 Hz)", "50 ms (20 Hz)", "100 ms (10 Hz)", "200 ms (5 Hz)", "500 ms (2 Hz)", "1000 ms (1 Hz)" };
         static const uint32_t rateValues[] = { 10, 20, 50, 100, 200, 500, 1000 };
-        static int selectedRate = 2; // Default 50ms
+        static int selectedRate = 3; // Default 100ms (10 Hz)
 
-        static const char* const fscLabels[] = { "100 mA", "500 mA", "1000 mA (默认)", "2000 mA", "3200 mA (最大)" };
-        static const uint32_t fscValues[] = { 100, 500, 1000, 2000, 3200 };
-        static int selectedFsc = 2; // Default 1000mA
+        static const char* const fscLabels[] = { "100 mA", "500 mA", "1000 mA", "2000 mA", "3200 mA", "5000 mA", "10000 mA", "20000 mA (20A)" };
+        static const uint32_t fscValues[] = { 100, 500, 1000, 2000, 3200, 5000, 10000, 20000 };
+        static int selectedFsc = 7; // Default 20A to keep the current LED comfortable
 
-        static const char* const avgLabels[] = { "1 次 (极速)", "4 次", "16 次 (默认推荐)", "64 次", "128 次", "256 次", "512 次", "1024 次 (极平滑)" };
+        static const char* const linkLedLabels[] = { "10% (最低)", "25%", "40%", "60%", "80%", "100%" };
+        static const uint32_t linkLedValues[] = { 26, 64, 102, 153, 204, 255 };
+        static int selectedLinkLed = 5;
+
+        static const char* const avgLabels[] = { "1 次 (极速)", "4 次", "16 次", "64 次 (默认推荐)", "128 次", "256 次", "512 次", "1024 次 (极平滑)" };
         static const uint32_t avgValues[] = { 1, 4, 16, 64, 128, 256, 512, 1024 };
-        static int selectedAvg = 2; // Default 16
+        static int selectedAvg = 3; // Default 64
 
         static const char* const shuntLabels[] = { "2 mΩ", "5 mΩ", "10 mΩ", "20 mΩ (默认标配)", "50 mΩ", "100 mΩ" };
         static const uint32_t shuntValues[] = { 2, 5, 10, 20, 50, 100 };
         static int selectedShunt = 3; // Default 20mR (matching hardware BOM R104 20mR 1% 3W)
 
+        static const char* const bleLabels[] = { "1 次/s", "2 次/s", "4 次/s (默认)", "5 次/s", "10 次/s", "20 次/s" };
+        static const uint32_t bleValues[] = { 1, 2, 4, 5, 10, 20 };
+        static int selectedBle = 2;
+
+        static uint64_t appliedCfgRevision = 0;
+        const uint64_t cfgRevision = state.dongleCfgRevision.load();
+        if (state.dongleCfg.config_loaded && cfgRevision != appliedCfgRevision) {
+            DongleConfig cfg;
+            {
+                std::lock_guard<std::mutex> lock(state.dongleCfgMutex);
+                cfg = state.dongleCfg;
+            }
+            auto closest = [](const uint32_t* values, int count, uint32_t actual) {
+                int best = 0;
+                uint32_t distance = (actual > values[0]) ? actual - values[0] : values[0] - actual;
+                for (int i = 1; i < count; ++i) {
+                    uint32_t d = (actual > values[i]) ? actual - values[i] : values[i] - actual;
+                    if (d < distance) { best = i; distance = d; }
+                }
+                return best;
+            };
+            selectedRate = closest(rateValues, IM_ARRAYSIZE(rateValues), cfg.sampling_rate_ms);
+            selectedFsc = closest(fscValues, IM_ARRAYSIZE(fscValues), cfg.full_scale_ma);
+            selectedLinkLed = closest(linkLedValues, IM_ARRAYSIZE(linkLedValues), cfg.link_led_max_duty);
+            selectedAvg = closest(avgValues, IM_ARRAYSIZE(avgValues), cfg.averaging_count);
+            selectedShunt = closest(shuntValues, IM_ARRAYSIZE(shuntValues), cfg.shunt_mohm);
+            selectedBle = closest(bleValues, IM_ARRAYSIZE(bleValues), cfg.ble_adv_hz);
+            appliedCfgRevision = cfgRevision;
+        }
+
         float comboItemW = 175.0f;
         float col2X = 290.0f;
+        float labelW = 96.0f;
+        float leftComboX = labelW;
+        float rightComboX = col2X + labelW;
 
-        // Line 1: Rate | FSC (LED满幅)
+        // Line 1: Rate | FSC (电流灯满亮)
         ImGui::AlignTextToFramePadding();
         ImGui::Text("采样周期:");
-        ImGui::SameLine();
+        ImGui::SameLine(leftComboX);
         ImGui::SetNextItemWidth(comboItemW);
         if (ImGui::Combo("##RateCombo", &selectedRate, rateLabels, IM_ARRAYSIZE(rateLabels))) {
             serial.SendCommand("CMD:RATE=" + std::to_string(rateValues[selectedRate]));
@@ -811,8 +1033,8 @@ void Dashboard::RenderControlAndLogTab() {
 
         ImGui::SameLine(col2X);
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("LED满幅:");
-        ImGui::SameLine();
+        ImGui::Text("电流灯满亮:");
+        ImGui::SameLine(rightComboX);
         ImGui::SetNextItemWidth(comboItemW);
         if (ImGui::Combo("##FscCombo", &selectedFsc, fscLabels, IM_ARRAYSIZE(fscLabels))) {
             serial.SendCommand("CMD:FSC=" + std::to_string(fscValues[selectedFsc]));
@@ -821,7 +1043,7 @@ void Dashboard::RenderControlAndLogTab() {
         // Line 2: AVG (采样平滑) | Shunt (检流电阻)
         ImGui::AlignTextToFramePadding();
         ImGui::Text("采样平滑:");
-        ImGui::SameLine();
+        ImGui::SameLine(leftComboX);
         ImGui::SetNextItemWidth(comboItemW);
         if (ImGui::Combo("##AvgCombo", &selectedAvg, avgLabels, IM_ARRAYSIZE(avgLabels))) {
             serial.SendCommand("CMD:AVG=" + std::to_string(avgValues[selectedAvg]));
@@ -830,18 +1052,31 @@ void Dashboard::RenderControlAndLogTab() {
         ImGui::SameLine(col2X);
         ImGui::AlignTextToFramePadding();
         ImGui::Text("检流电阻:");
-        ImGui::SameLine();
+        ImGui::SameLine(rightComboX);
         ImGui::SetNextItemWidth(comboItemW);
         if (ImGui::Combo("##ShuntCombo", &selectedShunt, shuntLabels, IM_ARRAYSIZE(shuntLabels))) {
             serial.SendCommand("CMD:SHUNT=" + std::to_string(shuntValues[selectedShunt]));
         }
 
-        ImGui::Spacing();
-
-        // Line 3: Save button (Full width WinUI 3 Primary Accent Button)
-        if (UIStyle::AccentButton("保存配置至 Flash (CMD:SAVE)", ImVec2(leftColW, 28), 4.0f)) {
-            serial.SendCommand("CMD:SAVE");
+        // Line 3: short-link LED maximum duty
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("通信灯亮度:");
+        ImGui::SameLine(leftComboX);
+        ImGui::SetNextItemWidth(comboItemW);
+        if (ImGui::Combo("##LinkLedCombo", &selectedLinkLed, linkLedLabels, IM_ARRAYSIZE(linkLedLabels))) {
+            serial.SendCommand("CMD:LINKLED=" + std::to_string(linkLedValues[selectedLinkLed]));
         }
+
+        ImGui::SameLine(col2X);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("BLE广播:");
+        ImGui::SameLine(rightComboX);
+        ImGui::SetNextItemWidth(comboItemW);
+        if (ImGui::Combo("##BleCombo", &selectedBle, bleLabels, IM_ARRAYSIZE(bleLabels))) {
+            serial.SendCommand("CMD:BLE=" + std::to_string(bleValues[selectedBle]));
+        }
+
+        ImGui::Spacing();
     }
     ImGui::EndGroup();
 
@@ -864,13 +1099,22 @@ void Dashboard::RenderControlAndLogTab() {
             IM_COL32(255, 255, 255, 255), IM_COL32(93, 93, 93, 255), IM_COL32(224, 224, 224, 255), 4.0f)) {
             state.ClearControlLog();
         }
+        ImGui::SameLine();
+        if (UIStyle::TactileButton("复制", ImVec2(48, 20),
+            IM_COL32(255, 255, 255, 255), IM_COL32(93, 93, 93, 255), IM_COL32(224, 224, 224, 255), 4.0f)) {
+            std::lock_guard<std::mutex> lock(state.controlLogMutex);
+            std::string text;
+            for (const auto& line : state.controlLog) { text += line; text.push_back('\n'); }
+            ImGui::SetClipboardText(text.c_str());
+        }
 
         // Log scrolling box (Pure white elevated container)
         float logBoxH = 142.0f;
         ImGui::PushStyleColor(ImGuiCol_ChildBg, UIStyle::ColorBgCard());
         ImGui::PushStyleColor(ImGuiCol_Border, UIStyle::ColorBorder());
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-        ImGui::BeginChild("ControlLogChild", ImVec2(0.0f, logBoxH), true);
+        ImGui::BeginChild("ControlLogChild", ImVec2(0.0f, logBoxH), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
         {
             std::lock_guard<std::mutex> lock(state.controlLogMutex);
             if (state.controlLog.empty()) {
@@ -908,8 +1152,158 @@ void Dashboard::RenderControlAndLogTab() {
             serial.SendCommand(m_customCmdBuffer);
             m_customCmdBuffer[0] = '\0';
         }
+        ImGui::Spacing();
+        if (UIStyle::AccentButton("保存配置至 Flash (CMD:SAVE)", ImVec2(rightColW, 28), 4.0f)) {
+            serial.SendCommand("CMD:SAVE");
+        }
     }
     ImGui::EndGroup();
+}
+
+void Dashboard::RenderFirmwareTab() {
+    auto& serial = SerialManager::Instance();
+    auto& state = AppState::Instance();
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float halfW = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
+    const float btnH = 32.0f;
+
+    ImGui::TextColored(UIStyle::ColorTextMain(), "进入出厂 ISP");
+    ImGui::TextColored(UIStyle::ColorTextMuted(), "用于重新烧录；CMD:BOOT 控制的是 Probe 后面的目标 MCU，不会让 Probe 自身进入 ISP。");
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!serial.IsDongleCOM2Open());
+    if (UIStyle::TactileButton("Dongle 进入 ISP", ImVec2(halfW, btnH),
+        IM_COL32(255, 240, 240, 255), IM_COL32(196, 43, 28, 255), IM_COL32(248, 215, 218, 255), 4.0f)) {
+        ImGui::OpenPopup("确认 Dongle 进入 ISP");
+    }
+    ImGui::SameLine();
+    if (UIStyle::TactileButton("Probe 进入 ISP", ImVec2(halfW, btnH),
+        IM_COL32(255, 248, 236, 255), IM_COL32(178, 91, 0, 255), IM_COL32(253, 227, 181, 255), 4.0f)) {
+        ImGui::OpenPopup("确认 Probe 进入 ISP");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::TextColored(UIStyle::ColorTextMuted(), "Dongle：双 COM 口断开，经 USB ISP 重新烧录。  Probe：无线链路断开，需连接 Probe 的物理 UART 重新烧录。");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(UIStyle::ColorTextMain(), "固件免拆升级 / OTA (无需 WCH 官方工具)");
+    ImGui::BeginDisabled(!serial.IsDongleCOM2Open());
+    if (UIStyle::TactileButton("Dongle 固件下发", ImVec2(halfW, btnH))) {
+        ImGui::OpenPopup("Dongle 固件下发");
+    }
+    ImGui::SameLine();
+    if (UIStyle::TactileButton("Probe OTA 升级", ImVec2(halfW, btnH))) {
+        ImGui::OpenPopup("Probe OTA 升级");
+    }
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("基于 Flash A/B 分区镜像搬移与 CRC32 强校验：分块发送至 Slot B (0x00020000)，整体验证通过后自动在 RAM 中覆盖 Slot A 并重启；支持断电安全保护，免拆外壳、免飞线、免依赖 WCH 官方工具。");
+
+    ImGui::SetNextWindowSize(ImVec2(470.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("确认 Dongle 进入 ISP", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("这会擦除 Dongle Flash 首扇区并重启进入出厂 ISP。双 COM 口将消失；之后需要用 WCHISPTool 重新烧录 Dongle 固件。");
+        ImGui::Spacing();
+        if (UIStyle::TactileButton("取消", ImVec2(110.0f, btnH))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!serial.IsDongleCOM2Open());
+        if (UIStyle::TactileButton("确认 Dongle 进入 ISP", ImVec2(200.0f, btnH),
+            IM_COL32(255, 240, 240, 255), IM_COL32(196, 43, 28, 255), IM_COL32(248, 215, 218, 255), 4.0f)) {
+            if (serial.SendCommand("CMD:DFU")) {
+                state.AddControlLog("[DFU] 已发送 Dongle 进入 ISP 命令；请用 WCHISPTool 重新烧录。");
+                serial.CloseCOM1();
+                serial.CloseDongleCOM2();
+            } else {
+                state.AddControlLog("[DFU] 未能确认命令发送成功，请检查 Dongle 是否已进入 ISP。");
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(470.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("确认 Probe 进入 ISP", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("这会经无线命令擦除 Probe Flash 首扇区并重启。Probe 随后失去无线功能，必须连接其物理 UART 并用 WCHISPTool 重新烧录；无法通过当前 Dongle 无线恢复。");
+        ImGui::Spacing();
+        if (UIStyle::TactileButton("取消", ImVec2(110.0f, btnH))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!serial.IsDongleCOM2Open());
+        if (UIStyle::TactileButton("确认 Probe 进入 ISP", ImVec2(200.0f, btnH),
+            IM_COL32(255, 248, 236, 255), IM_COL32(178, 91, 0, 255), IM_COL32(253, 227, 181, 255), 4.0f)) {
+            if (serial.SendCommand("CMD:PROBE_DFU")) {
+                state.AddControlLog("[DFU] 已请求 Probe 进入 ISP；等待 Probe 回应后连接物理 UART 烧录。");
+            } else {
+                state.AddControlLog("[DFU] Probe ISP 命令发送失败。");
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Dongle 固件下发", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("选择 Dongle 的 Intel HEX 后，上位机将独占 COM2 分块发送、等待每块 ACK，完成 CRC32 校验后由固件自动切换镜像并重启。更新期间两个虚拟串口会短暂消失。\n\n当前端口：%s",
+                           state.dongleCOM2Port.empty() ? "<未连接>" : state.dongleCOM2Port.c_str());
+        ImGui::Spacing();
+        if (UIStyle::TactileButton("关闭", ImVec2(100.0f, btnH))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(serial.IsFirmwareUpdateRunning());
+        if (UIStyle::TactileButton("选择 HEX 并开始更新", ImVec2(230.0f, btnH))) {
+            std::string hexPath;
+            if (PickHexFile(hexPath)) {
+                if (!serial.StartFirmwareUpdate(false, hexPath)) {
+                    state.AddControlLog("[DONGLE FW] 启动更新失败：COM2 未连接或已有更新任务");
+                }
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        if (serial.IsFirmwareUpdateRunning()) {
+            ImGui::SameLine();
+            ImGui::TextColored(UIStyle::ColorPower(), "更新进行中...");
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(500.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Probe OTA 升级", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("选择 Probe 的 Intel HEX 后，文件经 Dongle COM2 分块转发到 Probe 的 Slot B，逐块等待无线 ACK，完成 CRC32 校验后由 Probe 自动切换镜像并重启。\n\n当前端口：%s",
+                           state.dongleCOM2Port.empty() ? "<未连接>" : state.dongleCOM2Port.c_str());
+        ImGui::Spacing();
+        if (UIStyle::TactileButton("关闭", ImVec2(100.0f, btnH))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(serial.IsFirmwareUpdateRunning());
+        if (UIStyle::TactileButton("选择 HEX 并开始 OTA", ImVec2(220.0f, btnH))) {
+            std::string hexPath;
+            if (PickHexFile(hexPath)) {
+                if (!serial.StartFirmwareUpdate(true, hexPath)) {
+                    state.AddControlLog("[PROBE OTA] 启动更新失败：COM2 未连接或已有更新任务");
+                }
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        if (serial.IsFirmwareUpdateRunning()) {
+            ImGui::SameLine();
+            ImGui::TextColored(UIStyle::ColorPower(), "更新进行中...");
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored(UIStyle::ColorTextMain(), "固件维护日志");
+    ImGui::BeginChild("FirmwareLog", ImVec2(0.0f, 105.0f), true);
+    {
+        std::lock_guard<std::mutex> lock(state.controlLogMutex);
+        const size_t first = state.controlLog.size() > 12 ? state.controlLog.size() - 12 : 0;
+        for (size_t i = first; i < state.controlLog.size(); ++i)
+            ImGui::TextUnformatted(state.controlLog[i].c_str());
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
 }
 
 void Dashboard::RenderCom1TerminalTab() {
@@ -999,16 +1393,43 @@ void Dashboard::RenderCom1TerminalTab() {
         ImGui::AlignTextToFramePadding();
         ImGui::Text("串口:");
         ImGui::SameLine();
-        ImGui::PushItemWidth(160.0f);
+        ImGui::PushItemWidth(300.0f);
+        auto portLabel = [](const SerialPortInfo& p) {
+            std::string label = p.portName + " - " + p.friendlyName;
+            if (!p.busReportedDesc.empty()) {
+                label += " （总线设备描述：" + p.busReportedDesc + "）";
+            }
+            return label;
+        };
         std::string preview = (!portList.empty() && selectedPortIdx < portList.size())
-            ? (portList[selectedPortIdx].portName + " (" + portList[selectedPortIdx].friendlyName + ")")
+            ? portLabel(portList[selectedPortIdx])
             : "未找到串口";
-        if (ImGui::BeginCombo("##ComPortCombo", preview.c_str())) {
+        const bool previewIsPassthrough = !portList.empty() && selectedPortIdx < portList.size() &&
+                                          portList[selectedPortIdx].isDongleCOM1;
+        if (previewIsPassthrough) {
+            ImGui::PushFont(g_FontBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, UIStyle::ColorVoltage());
+        }
+        bool comboOpen = ImGui::BeginCombo("##ComPortCombo", preview.c_str());
+        if (previewIsPassthrough) {
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+        }
+        if (comboOpen) {
             for (int i = 0; i < (int)portList.size(); ++i) {
                 bool isSelected = (selectedPortIdx == i);
-                std::string label = portList[i].portName + " - " + portList[i].friendlyName;
+                std::string label = portLabel(portList[i]);
+                const bool isPassthrough = portList[i].isDongleCOM1;
+                if (isPassthrough) {
+                    ImGui::PushFont(g_FontBold);
+                    ImGui::PushStyleColor(ImGuiCol_Text, UIStyle::ColorVoltage());
+                }
                 if (ImGui::Selectable(label.c_str(), isSelected)) {
                     selectedPortIdx = i;
+                }
+                if (isPassthrough) {
+                    ImGui::PopStyleColor();
+                    ImGui::PopFont();
                 }
                 if (isSelected) ImGui::SetItemDefaultFocus();
             }
@@ -1051,6 +1472,19 @@ void Dashboard::RenderCom1TerminalTab() {
             IM_COL32(255, 255, 255, 255), IM_COL32(93, 93, 93, 255), IM_COL32(224, 224, 224, 255), 4.0f)) {
             state.ClearCom1Rx();
         }
+        ImGui::SameLine();
+        if (UIStyle::TactileButton("复制日志", ImVec2(68, toolbarH),
+            IM_COL32(255, 255, 255, 255), IM_COL32(93, 93, 93, 255), IM_COL32(224, 224, 224, 255), 4.0f)) {
+            std::lock_guard<std::mutex> lock(state.com1RxMutex);
+            std::string copyText;
+            for (const auto& line : state.com1LogLines) {
+                copyText += line;
+                copyText.push_back('\n');
+            }
+            if (!state.com1LogAccumulator.empty()) copyText += "[" + MakeLogTimestamp() + "] " + state.com1LogAccumulator;
+            if (copyText.empty()) copyText.assign(state.com1RxBuffer.begin(), state.com1RxBuffer.end());
+            ImGui::SetClipboardText(copyText.c_str());
+        }
 
         char rxTxText[64];
         snprintf(rxTxText, sizeof(rxTxText), "RX:%lluB | TX:%lluB",
@@ -1070,7 +1504,8 @@ void Dashboard::RenderCom1TerminalTab() {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, UIStyle::ColorBgCard());
         ImGui::PushStyleColor(ImGuiCol_Border, UIStyle::ColorBorder());
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-        ImGui::BeginChild("Com1TerminalOutput", ImVec2(0.0f, 116.0f), true);
+        ImGui::BeginChild("Com1TerminalOutput", ImVec2(0.0f, 116.0f), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
         {
             std::lock_guard<std::mutex> lock(state.com1RxMutex);
             if (state.com1RxBuffer.empty()) {
@@ -1088,8 +1523,18 @@ void Dashboard::RenderCom1TerminalTab() {
                         }
                     }
                 } else {
-                    std::string text(state.com1RxBuffer.begin(), state.com1RxBuffer.end());
-                    ImGui::TextColored(UIStyle::ColorTextMain(), "%s", text.c_str());
+                    if (!state.com1LogLines.empty() || !state.com1LogAccumulator.empty()) {
+                        for (const auto& line : state.com1LogLines) {
+                            ImGui::TextColored(UIStyle::ColorTextMain(), "%s", line.c_str());
+                        }
+                        if (!state.com1LogAccumulator.empty()) {
+                            ImGui::TextColored(UIStyle::ColorTextMain(), "[%s] %s",
+                                               MakeLogTimestamp().c_str(), state.com1LogAccumulator.c_str());
+                        }
+                    } else {
+                        std::string text(state.com1RxBuffer.begin(), state.com1RxBuffer.end());
+                        ImGui::TextColored(UIStyle::ColorTextMain(), "%s", text.c_str());
+                    }
                 }
             }
 
@@ -1103,7 +1548,7 @@ void Dashboard::RenderCom1TerminalTab() {
 
         // TX Input Bar
         float sendBtnW = 76.0f;
-        float eolComboW = 72.0f;
+        float eolComboW = 110.0f;
         float availInputW = ImGui::GetContentRegionAvail().x - sendBtnW - eolComboW - spacing * 2.0f;
         if (availInputW < 100.0f) availInputW = 100.0f;
 
@@ -1131,14 +1576,85 @@ void Dashboard::RenderCom1TerminalTab() {
 }
 
 void Dashboard::RenderBleDiagnosticsTab() {
+    auto& serial = SerialManager::Instance();
     auto& state = AppState::Instance();
 
     ImGui::TextColored(UIStyle::ColorVoltage(), "Probe 蓝牙未配对广播机制 (ADV_NONCONN_IND)");
     ImGui::BulletText("目标 MAC 地址: %s", state.bleDeviceMac.c_str());
     ImGui::BulletText("服务 UUID: 0xFCD2 (16-bit Service Data 广播格式)");
-    ImGui::BulletText("广播包总负载: 11 字节 (Flags 3B + Service Data 8B)");
+    ImGui::BulletText("广播 Service Data: 电流有符号 17 位(0.125mA/LSB) + 电压 15 位(1.25mV/LSB) + 序号");
     ImGui::BulletText("实时信号强度 (RSSI): %d dBm", (int)state.bleLastRssi.load());
     ImGui::BulletText("累计捕获广播包数: %llu", (unsigned long long)state.blePacketCount.load());
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // On-demand 2.4 GHz link test. Throughput is measured at the Dongle,
+    // while RTT statistics come from Probe acknowledgements.
+    ImGui::TextColored(UIStyle::ColorTextMain(), "无线链路有效速率与延迟");
+    ImGui::TextColored(UIStyle::ColorTextMuted(), "测试期间会占用无线链路，完成后结果写入下方控制日志。");
+    static const char* const rfTestDurationLabels[] = { "1 秒", "3 秒", "5 秒" };
+    static const uint32_t rfTestDurationValues[] = { 1000u, 3000u, 5000u };
+    static int rfTestDurationIndex = 1;
+
+    ImGui::SetNextItemWidth(92.0f);
+    ImGui::Combo("##RfTestDuration", &rfTestDurationIndex,
+                 rfTestDurationLabels, IM_ARRAYSIZE(rfTestDurationLabels));
+    ImGui::SameLine();
+    bool rfTestRunning = false;
+    RfTestResult rfTestResult;
+    bool rfTimedOut = false;
+    {
+        std::lock_guard<std::mutex> lock(state.rfTestMutex);
+        const double now = state.GetElapsedSeconds();
+        if (state.rfTest.running && state.rfTest.started_at > 0.0 &&
+            state.rfTest.requested_ms > 0 &&
+            now - state.rfTest.started_at >
+                (static_cast<double>(state.rfTest.requested_ms) / 1000.0 + 3.0)) {
+            state.rfTest.running = false;
+            state.rfTest.valid = false;
+            state.rfTest.started_at = 0.0;
+            rfTimedOut = true;
+        }
+        rfTestResult = state.rfTest;
+        rfTestRunning = state.rfTest.running;
+    }
+    if (rfTimedOut) {
+        state.AddControlLog("[RFTEST] 超时，已结束本次测试");
+    }
+    ImGui::BeginDisabled(!serial.IsDongleCOM2Open() || rfTestRunning);
+    if (UIStyle::AccentButton("开始测试", ImVec2(92.0f, 24.0f), 4.0f)) {
+        {
+            std::lock_guard<std::mutex> lock(state.rfTestMutex);
+            state.rfTest.running = true;
+            state.rfTest.valid = false;
+            state.rfTest.started_at = state.GetElapsedSeconds();
+            state.rfTest.requested_ms = rfTestDurationValues[rfTestDurationIndex];
+        }
+        if (!serial.SendCommand("CMD:RFTEST=" +
+                                std::to_string(rfTestDurationValues[rfTestDurationIndex]))) {
+            std::lock_guard<std::mutex> lock(state.rfTestMutex);
+            state.rfTest.running = false;
+            state.rfTest.started_at = 0.0;
+            state.AddControlLog("[RFTEST] 命令发送失败");
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (rfTestRunning) {
+        ImGui::TextColored(UIStyle::ColorTextMuted(), "测试进行中...");
+    } else if (rfTestResult.valid) {
+        ImGui::Text("速率 %.2f KB/s  RTT 平均 %lu us  最小 %lu  最大 %lu  (%lu 包)",
+                    static_cast<double>(rfTestResult.rate_bps) / 1024.0,
+                    static_cast<unsigned long>(rfTestResult.avg_us),
+                    static_cast<unsigned long>(rfTestResult.min_us),
+                    static_cast<unsigned long>(rfTestResult.max_us),
+                    static_cast<unsigned long>(rfTestResult.packets));
+    } else {
+        ImGui::TextColored(UIStyle::ColorTextMuted(), "暂无测试结果");
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -1148,7 +1664,7 @@ void Dashboard::RenderBleDiagnosticsTab() {
     ImGui::BulletText("分流电压分辨率: 1 LSB = 2.5 uV (搭配 20 mΩ 采样电阻即 1 LSB = 0.125 mA = 125 uA)");
     ImGui::BulletText("母线电压分辨率: 1 LSB = 1.25 mV");
     ImGui::BulletText("功率由上位机高精度浮点计算: P = V_bus * I_shunt (保留 2 位小数精确至 0.01 mW)");
-    ImGui::BulletText("极低射频开销与功耗: 报文仅传输 4 字节原始 ADC 码值 (shunt_raw 2B + bus_raw 2B)");
+    ImGui::BulletText("极低射频开销与功耗: 工程量载荷 5 字节，扫描端无需配置采样电阻");
 }
 
 } // namespace CH570App

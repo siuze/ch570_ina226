@@ -60,7 +60,6 @@ typeBufSize write_buf(struct simple_buf *buf, void *src, typeBufSize *len )
 
     if( free_len < *len )
     {
-        PRINT("#ERR\n");
         *len = 0;
         return buf->data_len;
     }

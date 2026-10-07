@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <sstream>
 #include <vector>
+#include <chrono>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -23,6 +24,16 @@ public:
         try {
             m_watcher = BluetoothLEAdvertisementWatcher();
             m_watcher.ScanningMode(BluetoothLEScanningMode::Active);
+            // Request a short RSSI sampling window. This does not change the
+            // over-the-air advertising interval, but prevents the Windows
+            // watcher from coalescing packets into its default ~1 s cadence.
+            auto signalFilter = m_watcher.SignalStrengthFilter();
+            using TimeSpan = winrt::Windows::Foundation::TimeSpan;
+            using TimeSpanRef = winrt::Windows::Foundation::IReference<TimeSpan>;
+            const auto sampling = winrt::box_value(TimeSpan{std::chrono::milliseconds(20)}).as<TimeSpanRef>();
+            const auto timeout = winrt::box_value(TimeSpan{std::chrono::seconds(2)}).as<TimeSpanRef>();
+            signalFilter.SamplingInterval(sampling);
+            signalFilter.OutOfRangeTimeout(timeout);
 
             // Register advertisement received handler
             m_token = m_watcher.Received([this](BluetoothLEAdvertisementWatcher const&, BluetoothLEAdvertisementReceivedEventArgs const& args) {
@@ -72,11 +83,12 @@ private:
         auto adv = args.Advertisement();
         if (!adv) return;
 
-        // Check 16-bit Service Data sections (type 0x16)
-        auto sections = adv.GetSectionsByType(0x16);
-        for (auto const& section : sections) {
+        // Check data sections for 16-bit Service Data (type 0x16)
+        for (auto const& section : adv.DataSections()) {
+            if (section.DataType() != 0x16) continue;
+
             auto dataBuffer = section.Data();
-            if (!dataBuffer || dataBuffer.Length() < 6) {
+            if (!dataBuffer || dataBuffer.Length() < 7) {
                 continue;
             }
 
@@ -86,16 +98,19 @@ private:
 
             // Verify Service UUID: 0xFCD2 (Little-endian: bytes[0] == 0xD2, bytes[1] == 0xFC)
             if (bytes[0] == 0xD2 && bytes[1] == 0xFC) {
-                // Bytes 2..3: int16_t shunt_raw (signed little-endian, 1 LSB = 0.125 mA)
-                int16_t shunt_raw = static_cast<int16_t>(bytes[2] | (bytes[3] << 8));
-                // Bytes 4..5: uint16_t bus_raw (unsigned little-endian, 1 LSB = 1.25 mV)
-                uint16_t bus_raw = static_cast<uint16_t>(bytes[4] | (bytes[5] << 8));
-
-                float current_ma = shunt_raw * 0.125f;
-                float voltage_v = (bus_raw * 1.25f) / 1000.0f;
+                // Bytes 2..5: low 17 bits signed current, high 15 bits voltage.
+                uint32_t packed = static_cast<uint32_t>(bytes[2]) |
+                                  (static_cast<uint32_t>(bytes[3]) << 8) |
+                                  (static_cast<uint32_t>(bytes[4]) << 16) |
+                                  (static_cast<uint32_t>(bytes[5]) << 24);
+                int32_t current_code = static_cast<int32_t>(packed & 0x1FFFFu);
+                if (current_code & 0x10000) current_code |= static_cast<int32_t>(0xFFFE0000u);
+                uint16_t bus_code = static_cast<uint16_t>((packed >> 17) & 0x7FFFu);
+                auto& state = AppState::Instance();
+                float current_ma = static_cast<float>(current_code) * 0.125f;
+                float voltage_v = static_cast<float>(bus_code) * 0.00125f;
                 float power_mw = voltage_v * current_ma;
 
-                auto& state = AppState::Instance();
                 double now = state.GetElapsedSeconds();
 
                 state.bleBeaconReceived = true;

@@ -16,8 +16,9 @@
 extern "C" {
 #endif
 
-/* Optimized buffer length to leave plenty of RAM (>2KB) for stack */
-#define UART_BUF_LEN        (1024 * 2)
+/* Hold a complete burst from an ESP ROM/application boot log while RF
+ * transactions continue in the main loop. */
+#define UART_BUF_LEN        960
 
 #define TXD_PIN_PA0         (1 << 0)  // PA0
 #define RXD_PIN_PA1         (1 << 1)  // PA1
@@ -39,6 +40,7 @@ enum uart_status
 #define DATA_LEN_UART       (32)
 
 extern uint8_t gBoundStatus;
+extern uint32_t gBaudRate;
 
 void UART_Init(void);
 uint8_t UART_RxQuery(void *buf, typeBufSize *len);

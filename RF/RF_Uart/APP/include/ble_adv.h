@@ -26,19 +26,24 @@ extern "C" {
 
 #include "CH57x_common.h"
 
-/* BLE advertising channels (RF channel index as accepted by the RF lib) */
-#define BLE_ADV_CH37            37      /* 2402 MHz */
-#define BLE_ADV_CH38            38      /* 2426 MHz */
-#define BLE_ADV_CH39            39      /* 2480 MHz */
+/* BLE primary advertising channels (RF MHz offset + whitening index) */
+#define BLE_ADV_CH37_FREQ       37      /* RFIP BLE channel 37 = 2402 MHz */
+#define BLE_ADV_CH38_FREQ       38      /* RFIP BLE channel 38 = 2426 MHz */
+#define BLE_ADV_CH39_FREQ       39      /* RFIP BLE channel 39 = 2480 MHz */
+#define BLE_ADV_CH37_IDX        37
+#define BLE_ADV_CH38_IDX        38
+#define BLE_ADV_CH39_IDX        39
 
 /* Maximum ADV data bytes in a single ADV_NONCONN_IND PDU */
 #define BLE_ADV_DATA_MAX        31
 
-/* Advertising interval while degraded (ms) */
-#define BLE_ADV_PERIOD_MS       1000
+/* Default/configurable advertising rate while unbound. */
+#define BLE_ADV_DEFAULT_HZ      4
+#define BLE_ADV_MIN_HZ          1
+#define BLE_ADV_MAX_HZ          20
 
 /* How long the probe must stay unbound before it degrades to beacon mode (ms) */
-#define BLE_ADV_DEGRADE_MS      3000
+#define BLE_ADV_DEGRADE_MS      1000
 
 /**
  * @brief  Initialise the beacon module (call once after RFRole_Init).
@@ -47,11 +52,13 @@ extern "C" {
 void BLE_AdvInit(const uint8_t addr[6]);
 
 /**
- * @brief  Refresh the advertised payload with raw INA226 resolution (Current & Voltage only).
- * @param  shunt_raw   INA226 raw shunt voltage register (int16_t, 1 LSB = 0.125mA with 20mOhm)
- * @param  bus_raw     INA226 raw bus voltage register (uint16_t, 1 LSB = 1.25mV)
+ * @brief  Refresh the advertised payload with compressed engineering values.
+ * @param  current_ua  signed current in microamps; encoded in a signed
+ *                     17-bit field at 0.125mA/LSB (about +/-8.192A).
+ * @param  bus_uv      bus voltage in microvolts; encoded in a 15-bit field at
+ *                     1.25mV/LSB (0..40.95875V).
  */
-void BLE_AdvSetTelemetryRaw(int16_t shunt_raw, uint16_t bus_raw);
+void BLE_AdvSetTelemetryFixed(int32_t current_ua, uint32_t bus_uv, uint32_t power_mw);
 
 /**
  * @brief  Refresh the advertised payload (backward-compatible wrapper).

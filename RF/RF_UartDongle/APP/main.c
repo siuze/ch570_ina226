@@ -22,22 +22,21 @@ void process_main( void )
 
 int main(void)
 {
-    HSECFG_Capacitance( HSECap_18p );
+    HSECFG_Capacitance( HSECap_8p );
     SetSysClock( CLK_SOURCE_HSE_PLL_100MHz );
 
-    // LED 1 (PA3) Link / comm-status indicator (schematic LED202)
-    GPIOA_SetBits( LED_PIN );
-    GPIOA_ModeCfg( LED_PIN, GPIO_ModeOut_PP_5mA );
+    /* Enable SysTick free-running counter */
+    SysTick->CMP = 0xFFFFFFFF;
+    SysTick->CTLR = (1 << 2) | (1 << 0);
 
-    // LED 2 (PA2) PWM2 Current Indicator (schematic LED201)
-    LED2_PWM_Init();
-
-    PRINT("Dongle starting...\n");
-    PRINT("%s\n", VER_RF_LIB);
-
+    /* PA0/PA1 are USB pins; the debug UART is not initialized here. */
     USB_Init();
     RFRole_Init();
     RF_UartRxInit();
+    /* RFRole_Init may gate/reset unused peripheral clocks.  Configure the
+     * LED PWM after RF startup so PWMX remains enabled. */
+    LED1_Init(); // PA3 / PWM3: link / comm-status indicator
+    LED2_Init(); // PA2 / PWM2: current indicator
 
     process_main();
 }

@@ -42,7 +42,7 @@
 /* Receive sync-acquisition time for 1M PHY + 4-byte access address */
 #define PKT_DET_TIMACQ_1M_ADDR4 156
 
-/* PDU header for ADV_NONCONN_IND (TxAdd/RxAdd = 0) */
+/* PDU header for ADV_NONCONN_IND using a public advertiser address. */
 #define PDU_ADV_NONCONN_IND     0x02u
 
 /* TX wait guard, ~5 ms, enough for PLL lock + air time */
@@ -57,12 +57,11 @@
 /* TX buffers must live in internal RAM for the RF DMA (.bss is RAM); the code
  * paths run from .highcode. Do NOT place objects and functions in the same
  * section (gcc reports a section type conflict). */
-static uint8_t s_tx_buf[RF_TX_BUF_SIZE] __attribute__((aligned(4)));
 static uint8_t s_tx_dma[RF_TX_BUF_SIZE] __attribute__((aligned(4)));
 
 static uint8_t  s_adv_addr[6];
-static uint8_t  s_adv_data[BLE_ADV_DATA_MAX];
 static uint8_t  s_adv_len;
+static uint8_t  s_adv_sequence;
 static uint8_t  s_tx_len;
 
 static rfipTx_t s_tx;
@@ -79,12 +78,12 @@ static uint8_t  s_regs_saved;
 /*=============================================================================
  * Integration hooks
  *===========================================================================*/
-uint8_t BLE_AdvActive(void)
+__HIGH_CODE uint8_t BLE_AdvActive(void)
 {
     return g_ble_adv_active;
 }
 
-void BLE_AdvMarkDone(void)
+__HIGH_CODE void BLE_AdvMarkDone(void)
 {
     s_tx_done = 1;
 }
@@ -93,12 +92,12 @@ void BLE_AdvMarkDone(void)
  * High-Resolution Compact BLE Payload
  *===========================================================================*/
 /* Compact Service Data (0x16) for UUID 0xFCD2:
- * Total ADV length: 11 bytes (Flags 3B + Service Data 8B)
- *   Byte 0: Length = 0x07 (Type 1B + UUID 2B + Current 2B + Voltage 2B)
+ *   AD length = 0x08 (type + UUID + packed current/voltage[4] + sequence)
  *   Byte 1: AD Type = 0x16 (Service Data - 16-bit UUID)
  *   Byte 2..3: UUID = 0xD2, 0xFC (0xFCD2)
- *   Byte 4..5: Current (int16_t, little endian, 1 LSB = 0.125mA with 20mOhm)
- *   Byte 6..7: Voltage (uint16_t, little endian, 1 LSB = 1.25mV)
+ *   Byte 4..7: packed uint32_t: current signed 17-bit (0.125mA/LSB),
+ *               bus voltage unsigned 15-bit (1.25mV/LSB)
+ *   Byte 8: rolling sequence, used to detect lost advertisements
  */
 static void put_u16le(uint8_t *p, uint16_t v)
 {
@@ -106,45 +105,52 @@ static void put_u16le(uint8_t *p, uint16_t v)
     p[1] = (uint8_t)(v >> 8);
 }
 
-void BLE_AdvSetTelemetryRaw(int16_t shunt_raw, uint16_t bus_raw)
+void BLE_AdvSetTelemetryFixed(int32_t current_ua, uint32_t bus_uv, uint32_t power_mw)
 {
-    uint8_t d[BLE_ADV_DATA_MAX];
+    (void)power_mw;
+    uint8_t *d = &s_tx_dma[8];
     uint8_t n = 0;
 
     /* Flags: LE General Discoverable, BR/EDR not supported (3B) */
-    d[n++] = 0x02; d[n++] = 0x01; d[n++] = 0x04;
+    d[n++] = 0x02; d[n++] = 0x01; d[n++] = 0x06;
 
-    /* Service Data (0x16) for UUID 0xFCD2 (8B total) */
-    d[n++] = 0x07;                           /* AD data length: 1 + 2 + 2 + 2 = 7 */
+    /* Service Data (0x16) for UUID 0xFCD2 */
+    d[n++] = 0x08;                           /* type + UUID + 2B current + 2B voltage + seq */
     d[n++] = 0x16;                           /* AD Type: Service Data - 16-bit UUID */
     d[n++] = 0xD2; d[n++] = 0xFC;             /* Service UUID 0xFCD2 (little endian) */
-    put_u16le(&d[n], (uint16_t)shunt_raw); n += 2;  /* Current (0.125mA / LSB) */
-    put_u16le(&d[n], bus_raw);             n += 2;  /* Voltage (1.25mV / LSB) */
+    /* Signed 17-bit current and 15-bit bus voltage share one 32-bit word. */
+    int32_t current_code = (current_ua >= 0) ?
+                           (current_ua + 62) / 125 :
+                           (current_ua - 62) / 125;
+    if (current_code > 0xFFFF) current_code = 0xFFFF;
+    if (current_code < -0x10000) current_code = -0x10000;
+    uint32_t bus_code = (bus_uv + 625u) / 1250u;
+    if (bus_code > 0x7FFFu) bus_code = 0x7FFFu;
+    uint32_t packed = ((uint32_t)bus_code << 17) | ((uint32_t)current_code & 0x1FFFFu);
+    d[n++] = (uint8_t)packed;
+    d[n++] = (uint8_t)(packed >> 8);
+    d[n++] = (uint8_t)(packed >> 16);
+    d[n++] = (uint8_t)(packed >> 24);
+    d[n++] = ++s_adv_sequence;
+
+    /* Complete Local Name (0x09): "CH570" (7B total) */
+    const char name[] = "CH570";
+    uint8_t nlen = (uint8_t)(sizeof(name) - 1);
+    d[n++] = nlen + 1;
+    d[n++] = 0x09;
+    for (uint8_t k = 0; k < nlen; k++) d[n++] = (uint8_t)name[k];
 
     s_adv_len = n;
-    for (uint8_t i = 0; i < n; i++) s_adv_data[i] = d[i];
-
-    /* (re)build the PDU: header, length, AdvA, ADV data */
-    s_tx_buf[0] = PDU_ADV_NONCONN_IND;
-    s_tx_buf[1] = (uint8_t)(6 + s_adv_len);
-    for (uint8_t i = 0; i < 6; i++) s_tx_buf[2 + i] = s_adv_addr[i];
-    for (uint8_t i = 0; i < s_adv_len; i++) s_tx_buf[8 + i] = s_adv_data[i];
+    /* Build directly in the DMA buffer while the RF IP is idle. */
+    s_tx_dma[0] = PDU_ADV_NONCONN_IND;
+    s_tx_dma[1] = (uint8_t)(6 + s_adv_len);
+    for (uint8_t i = 0; i < 6; i++) s_tx_dma[2 + i] = s_adv_addr[i];
     s_tx_len = (uint8_t)(8 + s_adv_len);
 }
 
 void BLE_AdvSetTelemetry(int32_t current_ma, uint16_t bus_mv, uint32_t power_mw)
 {
-    (void)power_mw;
-    /* Convert mA (at 20mOhm) to shunt_raw (1 LSB = 0.125mA -> * 8) */
-    int32_t raw_i = current_ma * 8;
-    if (raw_i > 32767) raw_i = 32767;
-    if (raw_i < -32768) raw_i = -32768;
-
-    /* Convert mV to bus_raw (1 LSB = 1.25mV -> * 4 / 5) */
-    uint32_t raw_v = ((uint32_t)bus_mv * 4) / 5;
-    if (raw_v > 0xFFFF) raw_v = 0xFFFF;
-
-    BLE_AdvSetTelemetryRaw((int16_t)raw_i, (uint16_t)raw_v);
+    BLE_AdvSetTelemetryFixed(current_ma * 1000, (uint32_t)bus_mv * 1000u, power_mw);
 }
 
 /*=============================================================================
@@ -157,7 +163,7 @@ void BLE_AdvInit(const uint8_t addr[6])
     for (uint8_t i = 0; i < 6; i++) s_adv_addr[i] = addr[i];
 
     /* Default payload so the very first burst is already valid */
-    BLE_AdvSetTelemetry(0, 0, 0);
+    BLE_AdvSetTelemetryFixed(0, 0, 0);
 
     s_tx.accessAddress   = BLE_ADV_ACCESS_ADDR;
     s_tx.accessAddressEx = 0;
@@ -176,12 +182,14 @@ void BLE_AdvInit(const uint8_t addr[6])
     props.mode2G4        = PHY_2G4_1M;       /* 1 Mbps */
     props.bitOrderData   = 1;                /* LSB first, per BLE spec */
     props.crcXOREnable   = 0;
+    /* props.bitOrderData already sets DATA_BIT_ORDER (bit 27).  Bit 28 is
+     * reserved and must remain zero. */
     s_tx.properties      = props.cfgVal;
 
     s_tx.txDMA           = (uint32_t)s_tx_dma;
     s_tx.txLen           = 0;
     s_tx.waitTime        = 80 * 2;           /* PLL lock wait, >= 80us */
-    s_tx.txPowerVal      = LL_TX_POWEER_0_DBM;
+    s_tx.txPowerVal      = LL_TX_POWEER_7_DBM;
 
     g_ble_adv_active = 0;
     s_regs_saved = 0;
@@ -219,15 +227,13 @@ static void ble_restore_regs(void)
 }
 
 __HIGH_CODE
-static uint8_t ble_send_on_channel(uint8_t ch)
+static uint8_t ble_send_on_channel(uint8_t rf_freq, uint8_t ble_ch)
 {
     uint32_t guard;
 
-    s_tx.frequency    = ch;
-    s_tx.whiteChannel = ch;
+    s_tx.frequency    = rf_freq;
+    s_tx.whiteChannel = ble_ch;
     s_tx.txLen        = s_tx_len;
-
-    for (uint8_t i = 0; i < s_tx_len; i++) s_tx_dma[i] = s_tx_buf[i];
 
     s_tx_done = 0;
     if (RFIP_StartTx(&s_tx) != 0) return 1;
@@ -241,14 +247,17 @@ static uint8_t ble_send_on_channel(uint8_t ch)
     return (guard == 0) ? 1 : 0;
 }
 
-void BLE_AdvBurst(void)
+__HIGH_CODE void BLE_AdvBurst(void)
 {
     g_ble_adv_active = 1;
     ble_apply_regs();
 
-    ble_send_on_channel(BLE_ADV_CH37);
-    ble_send_on_channel(BLE_ADV_CH38);
-    ble_send_on_channel(BLE_ADV_CH39);
+    /* RFIP frequency is the BLE channel number, not the MHz offset. */
+    ble_send_on_channel(BLE_ADV_CH37_FREQ, BLE_ADV_CH37_IDX);
+    mDelayuS(100);
+    ble_send_on_channel(BLE_ADV_CH38_FREQ, BLE_ADV_CH38_IDX);
+    mDelayuS(100);
+    ble_send_on_channel(BLE_ADV_CH39_FREQ, BLE_ADV_CH39_IDX);
 
     ble_restore_regs();
     g_ble_adv_active = 0;

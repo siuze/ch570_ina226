@@ -9,14 +9,22 @@ tmp/
 *.hex
 *.bin
 *.map
+*.su
 *.lst
 obj_linux/
 
 # ---- app_win (CMake / MSVC) build dir ----
 app_win/build/
+app_win/build_verify/
+app_win/build_verify_vs/
 
 # ---- ch570mon built binary ----
 app_linux/ch570mon
+
+# ---- Android/Gradle generated files ----
+app_android/.gradle/
+app_android/build/
+app_android/app/build/
 
 # ---- Downloaded RISC-V toolchains (large binaries; not tracked) ----
 tools/xpack-riscv-none-elf-gcc-*/

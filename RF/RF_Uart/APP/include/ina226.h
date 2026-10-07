@@ -52,6 +52,8 @@ extern "C" {
 
 /* Structure holding measurement results */
 typedef struct {
+    int32_t current_ua;     // Current in uA (signed, fixed point from raw shunt)
+    uint32_t bus_uv;        // Bus Voltage in uV (raw 1.25mV/LSB preserved)
     int32_t current_ma;     // Current in mA (signed)
     uint32_t bus_mv;        // Bus Voltage in mV
     uint32_t power_mw;      // Power in mW
@@ -59,8 +61,8 @@ typedef struct {
     uint16_t bus_raw;       // Raw bus register (1.25mV / LSB)
 } ina226_data_t;
 
-/* Functions */
 void INA226_Init(uint32_t r_shunt_uohm, uint16_t avg_samples);
+uint8_t INA226_CheckID(uint16_t *pManufID, uint16_t *pDieID);
 uint8_t INA226_ReadData(ina226_data_t *pData);
 void INA226_SetConfig(uint32_t r_shunt_uohm, uint16_t avg_samples);
 uint32_t INA226_GetShuntResistance(void);

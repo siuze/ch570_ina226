@@ -508,7 +508,7 @@ bool UIStyle::RadioToggle(const char* label, bool* value, ImU32 activeColor) {
     const ImGuiID id = window->GetID(label);
 
     ImVec2 labelSize = ImGui::CalcTextSize(label, nullptr, true);
-    float radius = 5.5f;
+    float radius = 7.0f;
     float circleGap = 6.0f;
     float height = 24.0f; // Match TactileButton and SegmentButton height for perfect horizontal alignment
     float width = radius * 2.0f + circleGap + labelSize.x;
@@ -548,4 +548,3 @@ bool UIStyle::RadioToggle(const char* label, bool* value, ImU32 activeColor) {
 }
 
 } // namespace CH570App
-

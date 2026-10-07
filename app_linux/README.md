@@ -65,8 +65,8 @@ make            # 生成 ./ch570mon
 
 ## 协议（复用现有固件，无需改固件）
 
-- 遥测行：`V:5.012V, I:123.125mA, P:617.16mW`
-- 信号：`RSSI:-68 dBm`
+- 遥测行：`[INA] V:5.012V, I:123.125mA, P:617.16mW`
+- 信号：`[RSSI] -68 dBm`
 - 版本：`[VER] Dongle: 2026-09-29 r01` / `[VER] Probe:  2026-09-29 r01`
 - 配置：`[CFG] FSC=..mA, RATE=..ms, SHUNT=..uOhm, SWAP=..`
 - 控制：`CMD:RST` / `CMD:BOOT` / `CMD:SWAP` / `CMD:VER?` / `CMD:CFG?`（以 `\r\n` 结尾）

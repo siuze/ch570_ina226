@@ -38,6 +38,7 @@ SECTIONS
         *(.vector);
         *(.highcode);
         *(.highcode.*);
+        *libISP572.a:*(.text .text.*);
 		. = ALIGN(4); 
         PROVIDE(_highcode_vma_end = .);
     } >RAM AT>FLASH
@@ -170,5 +171,5 @@ SECTIONS
 	} >RAM  
 }
 
-
-
+/* Enforce a build-time floor of 1 KiB for interrupt and main-loop stack reserve. */
+ASSERT(_ebss + 1024 <= ORIGIN(RAM) + LENGTH(RAM), "RAM stack reserve below 1 KiB")

@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">CH570 功耗监测</string>
+    <string name="ble_listening">BLE 监听中</string>
+    <string name="ble_stopped">BLE 停止</string>
+    <string name="btn_start">启动</string>
+    <string name="btn_stop">停止</string>
+    <string name="btn_clear">清空</string>
+    <string name="btn_pause">暂停</string>
+    <string name="btn_resume">继续</string>
+    <string name="btn_reset_energy">清零</string>
+    <string name="btn_export_csv">导出 CSV</string>
+    <string name="card_current_title">采样电流</string>
+    <string name="card_current_en">SHUNT CURRENT</string>
+    <string name="card_power_title">实时功率</string>
+    <string name="card_power_en">INSTANT POWER</string>
+    <string name="card_voltage_title">母线电压</string>
+    <string name="card_voltage_en">BUS VOLTAGE</string>
+    <string name="card_energy_title">电量累计</string>
+    <string name="card_energy_en">CAPACITY &amp; ENERGY</string>
+    <string name="label_signal">信号</string>
+    <string name="label_packets">广播包</string>
+</resources>

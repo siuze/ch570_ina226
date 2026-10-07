@@ -1,0 +1,13 @@
+<resources>
+    <color name="primary">#0284C7</color>
+    <color name="primary_dark">#0369A1</color>
+    <color name="accent_current">#16A34A</color>
+    <color name="accent_power">#D97706</color>
+    <color name="accent_voltage">#0284C7</color>
+    <color name="accent_energy">#4F46E5</color>
+    <color name="bg_window">#F8FAFC</color>
+    <color name="bg_card">#FFFFFF</color>
+    <color name="border_card">#E2E8F0</color>
+    <color name="text_main">#0F172A</color>
+    <color name="text_muted">#64748B</color>
+</resources>

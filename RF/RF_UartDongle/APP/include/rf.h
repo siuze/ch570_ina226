@@ -20,7 +20,7 @@ extern "C"
 /* Firmware version string reported to the host via "CMD:VER?" (format: YYYY-MM-DD rNN).
  * Override at build time with -DFW_VERSION_STR=\"...\" if desired. */
 #ifndef FW_VERSION_STR
-#define FW_VERSION_STR         "2026-09-29 r01"
+#define FW_VERSION_STR         "2026-10-06 r09-rftest-led"
 #endif
 
 #define  DEF_FREQUENCY   17              // ͨ��Ƶ��
@@ -186,8 +186,42 @@ typedef struct __attribute__((packed))
 #define  PKT_CMD_CTRL          0x30
 #define  PKT_DATA_TELEMETRY    0x31
 #define  PKT_RSP_CTRL          0x32
+#define  PKT_RSP_OTA           0x33
+#define  OPCODE_OTA            0x40
 
-#define  CFG_FLASH_ADDR        (1024 * 235)
+#define  PROBE_SLOT_B_ADDR     0x00020000
+#define  PROBE_MAX_FW_SIZE     (32 * 1024)
+
+#define  OTA_OP_START          0x01
+#define  OTA_OP_DATA           0x02
+#define  OTA_OP_FINISH         0x03
+#define  OTA_OP_ABORT          0x04
+
+#define  OTA_STATUS_OK         0x00
+#define  OTA_STATUS_ERR_SIZE   0x01
+#define  OTA_STATUS_ERR_ERASE  0x02
+#define  OTA_STATUS_ERR_WRITE  0x03
+#define  OTA_STATUS_ERR_CRC    0x04
+#define  OTA_STATUS_ERR_STATE  0x05
+
+typedef struct __attribute__((packed))
+{
+    uint8_t  ota_op;
+    uint8_t  len;
+    uint16_t chunk_idx;
+    uint32_t offset;
+    uint32_t crc32;
+    uint8_t  data[64];
+} ota_cmd_pkt_t;
+
+typedef struct __attribute__((packed))
+{
+    uint8_t  ota_op;
+    uint8_t  status;
+    uint16_t chunk_idx;
+    uint32_t offset;
+} ota_rsp_pkt_t;
+#define  CFG_FLASH_ADDR        (1024 * 232)
 #define  CFG_MAGIC             0x5A5AA5A5
 
 typedef struct __attribute__((packed))
@@ -198,7 +232,8 @@ typedef struct __attribute__((packed))
     uint16_t report_interval_ms;
     uint16_t full_scale_ma;
     uint8_t  uart_swapped;
-    uint8_t  resv;
+    uint8_t  link_led_max_duty;
+    uint8_t  ble_adv_hz;
 } dev_config_t;
 
 #define CTRL_OP_RESET          0x01
@@ -207,6 +242,12 @@ typedef struct __attribute__((packed))
 #define CTRL_OP_SET_CFG        0x04
 #define CTRL_OP_GET_CFG        0x05
 #define CTRL_OP_GET_VER        0x06
+#define CTRL_OP_PROBE_DFU      0x07
+#define CTRL_OP_RF_TEST        0x08
+
+#define RF_TEST_MARK0          0xA5
+#define RF_TEST_MARK1          0x5A
+#define RF_TEST_PAYLOAD_LEN    128u
 
 typedef struct __attribute__((packed))
 {
@@ -214,14 +255,15 @@ typedef struct __attribute__((packed))
     uint8_t param8;
     uint16_t param16;
     uint32_t param32;
+    uint16_t full_scale_ma;
+    uint8_t  link_led_max_duty;
+    uint8_t  ble_adv_hz;
 } ctrl_cmd_pkt_t;
 
 typedef struct __attribute__((packed))
 {
-    int32_t current_ma;
-    uint16_t bus_mv;
-    uint16_t power_mw;
     int16_t shunt_raw;
+    uint16_t bus_raw;
     uint8_t flags;
 } telemetry_pkt_t;
 

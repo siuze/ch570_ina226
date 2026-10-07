@@ -19,12 +19,15 @@ public:
     // Port enumeration
     std::vector<SerialPortInfo> EnumeratePorts();
     void AutoDetectDongle();
+    void ServiceAutoReconnect();
 
     // COM2 Telemetry & Control
     bool OpenDongleCOM2(const std::string& portName);
     void CloseDongleCOM2();
     bool IsDongleCOM2Open() const { return m_com2Running.load(); }
     bool SendCommand(const std::string& cmd);
+    bool StartFirmwareUpdate(bool probe, const std::string& hexPath);
+    bool IsFirmwareUpdateRunning() const { return m_fwUpdating.load(); }
 
     // COM1 Target MCU Passthrough
     bool OpenCOM1(const std::string& portName, uint32_t baudRate);
@@ -37,20 +40,27 @@ public:
 
 private:
     SerialManager();
+    void CloseCOM1Internal();
 
     // COM2 reader worker
     void COM2ThreadFunc();
     std::thread m_com2Thread;
     std::atomic<bool> m_com2Running{false};
     void* m_hCom2{nullptr}; // HANDLE
+    std::thread m_fwThread;
+    std::atomic<bool> m_fwUpdating{false};
 
     // COM1 reader worker
     void COM1ThreadFunc();
     std::thread m_com1Thread;
     std::atomic<bool> m_com1Running{false};
+    std::atomic<bool> m_com1ReconnectWanted{false};
     void* m_hCom1{nullptr}; // HANDLE
+    std::string m_lastCom1Port;
+    uint32_t m_lastCom1Baud{115200};
 
     void ParseCOM2Line(const std::string& line);
+    void FirmwareUpdateWorker(bool probe, std::string hexPath, std::string portName);
 };
 
 } // namespace CH570App

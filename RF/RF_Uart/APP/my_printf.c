@@ -397,10 +397,11 @@ static void _uart_putc(char* data, uint16_t size)
 {
   for( int i=0; i<size; i++)
   {
-    while( R8_UART_TFC == UART_FIFO_SIZE );                        /* 等待数据发送 */
+    uint32_t to = 50000; while( (R8_UART_TFC == UART_FIFO_SIZE) && --to );                        /* 等待数据发送 */
     R8_UART_THR = *data++;                                         /* 发送数据 */
   }
 }
+#if DEBUG_INFO
 __HIGH_CODE_PRINT
 void dbg_printf(const char* format, ...)
 {
@@ -409,5 +410,6 @@ void dbg_printf(const char* format, ...)
     log_vsprintf(_uart_putc, format, args);
     va_end(args);
 }
+#endif
 
 

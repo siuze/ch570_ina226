@@ -1,5 +1,7 @@
 # CH570 无线串口 & 实时电流功耗监测器 Windows 上位机 (app_win)
 
+完整的功能、数据流、配置命令、升级、PWM 和 BLE 限制说明见：[上位机总设计文档](../docs/上位机总设计文档.md)。
+
 ## 1. 软件概述
 本项目是针对 **CH570Q 双模无线串口透传与高精度电流功耗监测工具** 开发的专属高性能 Windows 桌面应用。
 - **架构方案**：原生 C++20 + Dear ImGui + ImPlot + DirectX 11 + WinRT BLE API + Win32 Serial API
@@ -45,10 +47,8 @@ app_win/
 ### 3.1 免配对 BLE 广播遥测 (Unpaired BLE Broadcast)
 - **广播类型**：`ADV_NONCONN_IND` (不可连接无定向广播，信道 37/38/39)
 - **服务 UUID**：`0xFCD2` (16-bit Service Data)
-- **报文负载长度**：仅 **11 字节**（3B Flags + 8B Service Data），极大压缩空中信道占用与 Probe 功耗
-- **高分辨率解码**：
-  - 分流电压原始码值（`shunt_raw`，`int16_t`，带符号补码）：$I = \text{shunt\_raw} \times 0.125\,\text{mA}$
-  - 母线电压原始码值（`bus_raw`，`uint16_t`，无符号）：$V = \frac{\text{bus\_raw} \times 1.25\,\text{mV}}{1000} = \text{bus\_raw} \times 0.00125\,\text{V}$
+- **报文 Service Data**：UUID 后为 4 字节打包值和 `sequence`；低 17 位是有符号电流码（`0.125mA/LSB`），高 15 位是母线电压码（`1.25mV/LSB`）
+- **高分辨率解码**：`I = signed_current_code × 0.125mA`，`V = bus_code × 0.00125V`，扫描端无需知道分流电阻
   - 瞬时功率计算：$P = V \times I$（单位：$\text{mW}$，精确到小数点后 2 位）
 
 ### 3.2 USB Dongle 遥测与参数遥控 (COM2 - MI_02)
@@ -57,10 +57,14 @@ app_win/
 - **快捷控制命令**：
   - `CMD:RST`：通过 RF 反向指令控制 Probe 引脚复位目标单片机
   - `CMD:BOOT`：拉低 BOOT 引脚后复位，引导目标 MCU 进入 Bootloader
+  - `CMD:DFU`：固件维护页的 Dongle 进入 ISP 按钮；确认后擦除 Dongle 首扇区并进入出厂 ISP，双 COM 口会断开，需用 WCHISPTool 重新烧录 Dongle 固件
+  - `CMD:PROBE_DFU`：固件维护页的 Probe 进入 ISP 按钮；通过已绑定的无线链路通知 Probe 擦除首扇区并进入出厂 ISP。此后必须连接 Probe 的物理 UART 重新烧录。两端固件均需支持该命令
+  - 固件维护页还预留了 Dongle 固件下发和 Probe OTA 入口。当前这两个按钮禁用；须完成镜像传输、双区引导及断电恢复后才能开放。可通过 COM2 分块传输镜像，无需依赖外部烧录工具完成日常升级
   - `CMD:SWAP`：切换 Probe 端的 TX/RX 交叉线序
   - `CMD:RATE=xxx`：设定遥测回传周期（10ms ~ 1000ms）
   - `CMD:FSC=xxx`：设定 Dongle 板载 PWM 模拟输出满量程电流（100mA ~ 3200mA）
   - `CMD:AVG=xxx`：配置 INA226 硬件滤波采样平均次数（1 ~ 1024）
+  - `CMD:BLE=xxx`：配置 Probe 未绑定时的 BLE 广播频率（1 ~ 20 次/s，默认 4 次/s）
   - `CMD:SHUNT=xxx`：配置采样电阻阻值（2mΩ ~ 100mΩ）
   - `CMD:SAVE`：固化所有运行参数至片上 Flash
   - `CMD:CFG?`：查询当前硬件运行参数并在交互日志中回显

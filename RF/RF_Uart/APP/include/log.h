@@ -21,9 +21,13 @@ extern "C" {
 #endif
 #include "stdint.h"
 
+#if 0
 void dbg_printf(const char* format, ...);
+#else
+#define dbg_printf(...) ((void)0)
+#endif
 void my_dump_byte(uint8_t* pData, int dlen);
-#define DEBUG_INFO  1
+#define DEBUG_INFO  0
 
 #ifndef DEBUG_INFO
 #error "DEBUG_INFO undefined!"
@@ -32,7 +36,7 @@ void my_dump_byte(uint8_t* pData, int dlen);
 typedef void(*std_putc)(char* data, uint16_t size);
 
 #ifndef __HIGH_CODE_PRINT
-#define __HIGH_CODE_PRINT   __attribute__((section(".highcode")))
+#define __HIGH_CODE_PRINT
 #endif
 
 #if(DEBUG_INFO == 1)

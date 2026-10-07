@@ -25,6 +25,9 @@ app_linux/ch570mon
 app_android/.gradle/
 app_android/build/
 app_android/app/build/
+app_android/gradle/
+app_android/gradlew
+app_android/gradlew.bat
 
 # ---- Downloaded RISC-V toolchains (large binaries; not tracked) ----
 tools/xpack-riscv-none-elf-gcc-*/

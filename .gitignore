@@ -28,6 +28,7 @@ app_android/app/build/
 app_android/gradle/
 app_android/gradlew
 app_android/gradlew.bat
+app_android/*.apk
 
 # ---- Downloaded RISC-V toolchains (large binaries; not tracked) ----
 tools/xpack-riscv-none-elf-gcc-*/

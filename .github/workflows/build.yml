@@ -151,10 +151,13 @@ jobs:
         run: |
           mkdir -p release/package
           cp release/firmware/*.hex release/package/
-          cp release/windows/CH570_Monitor.exe release/package/
-          cp release/android/*.apk release/package/
+          find release/windows -type f -name 'CH570_Monitor.exe' -exec cp {} release/package/ \;
+          find release/android -type f -name '*.apk' -exec cp {} release/package/ \;
           cp release/linux/x64/ch570mon release/package/ch570mon-linux-x64
           cp release/linux/aarch64/ch570mon release/package/ch570mon-linux-aarch64
+          test -f release/package/CH570_Monitor.exe
+          test -f release/package/app-debug.apk
+          test -f release/package/app-release.apk
           tar -czf "CH570-wireless-serial-${GITHUB_REF_NAME}.tar.gz" -C release/package .
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

@@ -10,11 +10,11 @@ fi
 ARCH="-march=rv32imc_zba_zbb_zbc_zbs_zicsr_zifencei -mabi=ilp32 -mcmodel=medany"
 CFLAGS="$ARCH -msmall-data-limit=8 -mno-save-restore -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g"
 COMMON_INC="-I${ROOT}/SRC/StdPeriphDriver/inc -I${ROOT}/SRC/RVMSIS -I${ROOT}/RF/LIB"
-COMMON_SRC="${ROOT}"/SRC/StdPeriphDriver/*.c "${ROOT}/SRC/Startup/startup_CH572.S"
+COMMON_SRC=("${ROOT}"/SRC/StdPeriphDriver/*.c "${ROOT}/SRC/Startup/startup_CH572.S")
 build_project() {
   local name="$1" appdir="$2" inc="$3" outdir="$4" rc=0
   mkdir -p "$outdir"
-  for src in $COMMON_SRC "$appdir"/*.c; do
+  for src in "${COMMON_SRC[@]}" "$appdir"/*.c; do
     obj="$outdir/$(basename "${src%.*}").o"
     if ! "$CC" $CFLAGS -DCH570Q $COMMON_INC "$inc" -I"$ROOT/SRC/Startup" -I"$ROOT/SRC/Ld" -c "$src" -o "$obj"; then rc=1; fi
   done

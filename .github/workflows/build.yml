@@ -126,6 +126,8 @@ jobs:
     name: release bundle
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [firmware, app-win, app-linux, app-android]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

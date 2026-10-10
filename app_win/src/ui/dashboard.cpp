@@ -992,28 +992,35 @@ void Dashboard::RenderControlAndLogTab() {
 
         static uint64_t appliedCfgRevision = 0;
         const uint64_t cfgRevision = state.dongleCfgRevision.load();
-        if (state.dongleCfg.config_loaded && cfgRevision != appliedCfgRevision) {
+        if (cfgRevision != appliedCfgRevision) {
             DongleConfig cfg;
+            bool configLoaded = false;
             {
                 std::lock_guard<std::mutex> lock(state.dongleCfgMutex);
                 cfg = state.dongleCfg;
+                configLoaded = cfg.config_loaded;
             }
-            auto closest = [](const uint32_t* values, int count, uint32_t actual) {
-                int best = 0;
-                uint32_t distance = (actual > values[0]) ? actual - values[0] : values[0] - actual;
-                for (int i = 1; i < count; ++i) {
-                    uint32_t d = (actual > values[i]) ? actual - values[i] : values[i] - actual;
-                    if (d < distance) { best = i; distance = d; }
-                }
-                return best;
-            };
-            selectedRate = closest(rateValues, IM_ARRAYSIZE(rateValues), cfg.sampling_rate_ms);
-            selectedFsc = closest(fscValues, IM_ARRAYSIZE(fscValues), cfg.full_scale_ma);
-            selectedLinkLed = closest(linkLedValues, IM_ARRAYSIZE(linkLedValues), cfg.link_led_max_duty);
-            selectedAvg = closest(avgValues, IM_ARRAYSIZE(avgValues), cfg.averaging_count);
-            selectedShunt = closest(shuntValues, IM_ARRAYSIZE(shuntValues), cfg.shunt_mohm);
-            selectedBle = closest(bleValues, IM_ARRAYSIZE(bleValues), cfg.ble_adv_hz);
-            appliedCfgRevision = cfgRevision;
+            if (!configLoaded) {
+                /* A revision is published only after a complete CFG parse. */
+                appliedCfgRevision = cfgRevision;
+            } else {
+                auto closest = [](const uint32_t* values, int count, uint32_t actual) {
+                    int best = 0;
+                    uint32_t distance = (actual > values[0]) ? actual - values[0] : values[0] - actual;
+                    for (int i = 1; i < count; ++i) {
+                        uint32_t d = (actual > values[i]) ? actual - values[i] : values[i] - actual;
+                        if (d < distance) { best = i; distance = d; }
+                    }
+                    return best;
+                };
+                selectedRate = closest(rateValues, IM_ARRAYSIZE(rateValues), cfg.sampling_rate_ms);
+                selectedFsc = closest(fscValues, IM_ARRAYSIZE(fscValues), cfg.full_scale_ma);
+                selectedLinkLed = closest(linkLedValues, IM_ARRAYSIZE(linkLedValues), cfg.link_led_max_duty);
+                selectedAvg = closest(avgValues, IM_ARRAYSIZE(avgValues), cfg.averaging_count);
+                selectedShunt = closest(shuntValues, IM_ARRAYSIZE(shuntValues), cfg.shunt_mohm);
+                selectedBle = closest(bleValues, IM_ARRAYSIZE(bleValues), cfg.ble_adv_hz);
+                appliedCfgRevision = cfgRevision;
+            }
         }
 
         float comboItemW = 175.0f;
@@ -1055,7 +1062,8 @@ void Dashboard::RenderControlAndLogTab() {
         ImGui::SameLine(rightComboX);
         ImGui::SetNextItemWidth(comboItemW);
         if (ImGui::Combo("##ShuntCombo", &selectedShunt, shuntLabels, IM_ARRAYSIZE(shuntLabels))) {
-            serial.SendCommand("CMD:SHUNT=" + std::to_string(shuntValues[selectedShunt]));
+            /* Protocol uses micro-ohms; the visible choices are milli-ohms. */
+            serial.SendCommand("CMD:SHUNT=" + std::to_string(shuntValues[selectedShunt] * 1000u));
         }
 
         // Line 3: short-link LED maximum duty

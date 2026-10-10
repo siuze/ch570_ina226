@@ -705,10 +705,16 @@ static void Dongle_Config_Save(void)
     cfg.link_led_max_duty = g_dongle_cfg.link_led_max_duty;
     cfg.ble_adv_hz = g_dongle_cfg.ble_adv_hz;
 
+    /* FLASH_ROM_WRITE requires an aligned RAM buffer and a dword-sized
+     * length.  The packed config is 17 bytes, so write a padded 20-byte copy. */
+    uint8_t cfg_buf[(sizeof(dev_config_t) + 3u) & ~3u] __attribute__((aligned(4)));
+    memset(cfg_buf, 0xFF, sizeof(cfg_buf));
+    memcpy(cfg_buf, &cfg, sizeof(cfg));
+
     uint32_t irqv;
     SYS_DisableAllIrq(&irqv);
     FLASH_ROM_ERASE(CFG_FLASH_ADDR, 4096);
-    FLASH_ROM_WRITE(CFG_FLASH_ADDR, &cfg, sizeof(dev_config_t));
+    FLASH_ROM_WRITE(CFG_FLASH_ADDR, cfg_buf, sizeof(cfg_buf));
     SYS_RecoverIrq(irqv);
 }
 

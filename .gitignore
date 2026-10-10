@@ -48,5 +48,7 @@ __pycache__/
 
 # ---- Syncthing / OS / editor noise ----
 .stfolder/
+# ---- Local editor settings ----
+.vscode/
 Thumbs.db
 Desktop.ini

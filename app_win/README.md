@@ -65,7 +65,7 @@ app_win/
   - `CMD:FSC=xxx`：设定 Dongle 板载 PWM 模拟输出满量程电流（100mA ~ 3200mA）
   - `CMD:AVG=xxx`：配置 INA226 硬件滤波采样平均次数（1 ~ 1024）
   - `CMD:BLE=xxx`：配置 Probe 未绑定时的 BLE 广播频率（1 ~ 20 次/s，默认 4 次/s）
-  - `CMD:SHUNT=xxx`：配置采样电阻阻值（2mΩ ~ 100mΩ）
+  - `CMD:SHUNT=xxx`：配置采样电阻阻值，单位为微欧姆（2mΩ ~ 100mΩ 对应 2000 ~ 100000）
   - `CMD:SAVE`：固化所有运行参数至片上 Flash
   - `CMD:CFG?`：查询当前硬件运行参数并在交互日志中回显
 

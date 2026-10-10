@@ -325,7 +325,7 @@ void Config_Load(void)
     if( pCfg->magic == CFG_MAGIC )
     {
         memcpy( &g_dev_config, pCfg, sizeof(dev_config_t) );
-        if( g_dev_config.report_interval_ms < 50 || g_dev_config.report_interval_ms > 5000 )
+        if( g_dev_config.report_interval_ms < 10 || g_dev_config.report_interval_ms > 1000 )
         {
             g_dev_config.report_interval_ms = 100;
         }
@@ -352,10 +352,17 @@ void Config_Load(void)
 
 void Config_Save(void)
 {
+    /* FLASH_ROM_WRITE accepts dword-sized writes only.  dev_config_t is a
+     * packed 17-byte wire/storage structure, so pad it to 20 bytes in an
+     * explicitly aligned RAM buffer before writing. */
+    uint8_t cfg_buf[(sizeof(dev_config_t) + 3u) & ~3u] __attribute__((aligned(4)));
+    memset(cfg_buf, 0xFF, sizeof(cfg_buf));
+    memcpy(cfg_buf, &g_dev_config, sizeof(g_dev_config));
+
     uint32_t irqv;
     SYS_DisableAllIrq(&irqv);
     FLASH_ROM_ERASE( CFG_FLASH_ADDR, 4096 );
-    FLASH_ROM_WRITE( CFG_FLASH_ADDR, &g_dev_config, sizeof(dev_config_t) );
+    FLASH_ROM_WRITE( CFG_FLASH_ADDR, cfg_buf, sizeof(cfg_buf) );
     SYS_RecoverIrq(irqv);
 }
 

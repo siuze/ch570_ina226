@@ -572,13 +572,29 @@ void SerialManager::ParseCOM2Line(const std::string& line) {
         // Check for the current configuration response order.
         if (line.find("[CFG]") != std::string::npos) {
             uint32_t rate = 0, fsc = 0, avg = 0, shunt = 0, linkLed = 0, bleHz = 0;
-            int parsed = sscanf_s(line.c_str(), "[CFG] RATE=%u, FSC=%u, AVG=%u, SHUNT=%u, SWAP=%*u, LINKLED=%u, BLE=%uHz", &rate, &fsc, &avg, &shunt, &linkLed, &bleHz);
+            /* Firmware includes engineering units in the response, e.g.
+             * "RATE=100ms, FSC=3200mA, SHUNT=20000uOhm".  The old format
+             * expected a comma immediately after each number, so it parsed
+             * only RATE and never updated the UI selections. */
+            int parsed = sscanf_s(line.c_str(),
+                "[CFG] RATE=%ums, FSC=%umA, AVG=%u, SHUNT=%uuOhm, SWAP=%*u, LINKLED=%u, BLE=%uHz",
+                &rate, &fsc, &avg, &shunt, &linkLed, &bleHz);
+            if (parsed != 6) {
+                /* Accept responses from older firmware builds without units. */
+                parsed = sscanf_s(line.c_str(),
+                    "[CFG] RATE=%u, FSC=%u, AVG=%u, SHUNT=%u, SWAP=%*u, LINKLED=%u, BLE=%uHz",
+                    &rate, &fsc, &avg, &shunt, &linkLed, &bleHz);
+            }
             if (parsed == 6) {
                 std::lock_guard<std::mutex> lock(state.dongleCfgMutex);
                 if (rate > 0) state.dongleCfg.sampling_rate_ms = rate;
                 if (fsc > 0) state.dongleCfg.full_scale_ma = fsc;
                 if (avg > 0) state.dongleCfg.averaging_count = avg;
-                if (shunt > 0) state.dongleCfg.shunt_mohm = shunt;
+                if (shunt > 0) {
+                    /* The wire value is micro-ohms; the UI model and combo
+                     * values are milli-ohms. */
+                    state.dongleCfg.shunt_mohm = (shunt > 1000u) ? ((shunt + 500u) / 1000u) : shunt;
+                }
                 if (linkLed >= 26 && linkLed <= 255 && line.find("LINKLED=") != std::string::npos) state.dongleCfg.link_led_max_duty = linkLed;
                 if (bleHz >= 1 && bleHz <= 20) state.dongleCfg.ble_adv_hz = bleHz;
                 state.dongleCfg.config_loaded = true;

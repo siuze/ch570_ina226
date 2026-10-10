@@ -82,20 +82,27 @@ void Probe_LED_TimerISR(void)
 {
   static uint8_t level_current = 0, level_voltage = 0;
   static uint8_t frac_current = 0, frac_voltage = 0;
-  uint16_t d_current = s_probe_led_current_duty;
-  uint16_t d_voltage = s_probe_led_voltage_duty;
-  uint8_t base_current = (uint8_t)(d_current >> 6);
-  uint8_t base_voltage = (uint8_t)(d_voltage >> 6);
   uint32_t on = 0;
 
-  frac_current = (uint8_t)(frac_current + (d_current & 0x3Fu));
-  frac_voltage = (uint8_t)(frac_voltage + (d_voltage & 0x3Fu));
-  level_current = (uint8_t)(base_current + (frac_current >= 64u));
-  level_voltage = (uint8_t)(base_voltage + (frac_voltage >= 64u));
-  if (frac_current >= 64u) frac_current = (uint8_t)(frac_current - 64u);
-  if (frac_voltage >= 64u) frac_voltage = (uint8_t)(frac_voltage - 64u);
-  if (level_current > PROBE_LED_PWM_STEPS) level_current = PROBE_LED_PWM_STEPS;
-  if (level_voltage > PROBE_LED_PWM_STEPS) level_voltage = PROBE_LED_PWM_STEPS;
+  /* Match the Dongle software-PWM scheduler: update the fractional duty
+   * level once per complete carrier period, then hold it for all 64 slots.
+   * Updating it on every ISR made the low-brightness edge move inside a
+   * carrier cycle and caused visible discontinuities while fading down. */
+  if (s_probe_led_phase == 0u) {
+    uint16_t d_current = s_probe_led_current_duty;
+    uint16_t d_voltage = s_probe_led_voltage_duty;
+    uint8_t base_current = (uint8_t)(d_current >> 6);
+    uint8_t base_voltage = (uint8_t)(d_voltage >> 6);
+
+    frac_current = (uint8_t)(frac_current + (d_current & 0x3Fu));
+    frac_voltage = (uint8_t)(frac_voltage + (d_voltage & 0x3Fu));
+    level_current = (uint8_t)(base_current + (frac_current >= 64u));
+    level_voltage = (uint8_t)(base_voltage + (frac_voltage >= 64u));
+    if (frac_current >= 64u) frac_current = (uint8_t)(frac_current - 64u);
+    if (frac_voltage >= 64u) frac_voltage = (uint8_t)(frac_voltage - 64u);
+    if (level_current > PROBE_LED_PWM_STEPS) level_current = PROBE_LED_PWM_STEPS;
+    if (level_voltage > PROBE_LED_PWM_STEPS) level_voltage = PROBE_LED_PWM_STEPS;
+  }
 
   s_probe_led_phase = (uint8_t)((s_probe_led_phase + 1u) & (PROBE_LED_PWM_STEPS - 1u));
   if (s_probe_led_phase < level_current) on |= PROBE_LED_CURRENT_PIN;

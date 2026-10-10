@@ -40,6 +40,12 @@
         android:roundIcon="@drawable/app_icon"
         android:supportsRtl="true"
         android:theme="@style/Theme.CH570ProbeMonitor">
+        <meta-data
+            android:name="com.ch570.probe.monitor.AUTHOR"
+            android:value="@string/app_author" />
+        <meta-data
+            android:name="com.ch570.probe.monitor.PROJECT_REPOSITORY"
+            android:value="@string/project_repository_url" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

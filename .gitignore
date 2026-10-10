@@ -17,6 +17,7 @@ obj_linux/
 app_win/build/
 app_win/build_verify/
 app_win/build_verify_vs/
+app_win/build_font/
 
 # ---- ch570mon built binary ----
 app_linux/ch570mon

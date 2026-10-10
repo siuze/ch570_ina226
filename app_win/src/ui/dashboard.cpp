@@ -206,16 +206,16 @@ void Dashboard::Render() {
     UIStyle::DrawCenteredDivider(5.0f);
     RenderBottomTabs();
 
-    // Keep firmware and application versions out of the status bar.  The
-    // compact footer stays visible without consuming layout space.
+    // Keep firmware versions and project attribution in a compact footer.
     {
         auto& state = AppState::Instance();
         std::string dongleVer, probeVer;
         state.GetFwVersions(dongleVer, probeVer);
         if (dongleVer.empty()) dongleVer = "未知";
         if (probeVer.empty()) probeVer = "未知";
-        const std::string footer = "Dongle " + dongleVer + " | Probe " + probeVer + " | 上位机 v2.0";
-        const float footerSize = 16.0f;
+        const std::string footer = "Dongle " + dongleVer + " | Probe " + probeVer +
+                                   " | 上位机 v2.0.8 | Design by IEKSIUZE";
+        const float footerSize = 15.0f;
         const ImVec2 footerSizePx = g_FontDefault->CalcTextSizeA(footerSize, FLT_MAX, 0.0f, footer.c_str());
         ImGui::GetForegroundDrawList()->AddText(g_FontDefault, footerSize,
             ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - footerSizePx.x - 12.0f,

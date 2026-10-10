@@ -88,7 +88,9 @@ private:
             if (section.DataType() != 0x16) continue;
 
             auto dataBuffer = section.Data();
-            if (!dataBuffer || dataBuffer.Length() < 7) {
+            // UUID (2) + packed telemetry (4) + sequence (1). Older raw-ADC
+            // advertisements are shorter and must never be decoded as packed.
+            if (!dataBuffer || dataBuffer.Length() != 7) {
                 continue;
             }
 

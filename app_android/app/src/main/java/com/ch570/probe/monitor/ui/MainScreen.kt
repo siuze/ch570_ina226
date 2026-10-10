@@ -92,13 +92,13 @@ fun MainScreen(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Footer note
+            // Footer attribution
             Box(
                 modifier = Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Probe BLE 0xFCD2 | Android 上位机 v2.0",
+                    text = "Android 上位机 v2.0.8 | Design by IEKSIUZE",
                     fontSize = 11.sp,
                     color = ColorTextMuted,
                     fontWeight = FontWeight.Medium

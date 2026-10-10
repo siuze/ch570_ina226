@@ -1,4 +1,6 @@
 #include "style.hpp"
+#include "g_iosevkaregular_font_data.hpp"
+#include "g_iosevkabold_font_data.hpp"
 #include "dseg7_font_data.hpp"
 #include "implot.h"
 #include "imgui_internal.h"
@@ -219,8 +221,9 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
                 boldYaheiPath, scaledSize * 1.05f, &yaheiBoldCfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
             );
         }
-    } else if (hasYahei) {
-        // Fallback when Iosevka is not installed
+    } else {
+        // Embedded Iosevka keeps the UI typography deterministic on machines
+        // where the user has not installed the optional system font.
         ImFontConfig config;
         config.OversampleH = 1;
         config.OversampleV = 1;
@@ -228,15 +231,32 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
         config.RasterizerMultiply = 1.15f;
         config.GlyphOffset.y = -1.5f * dpiScale;
 
-        g_FontDefault = io.Fonts->AddFontFromFileTTF(
-            yaheiPath, scaledSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
+        ImFontConfig embeddedRegular = config;
+        embeddedRegular.GlyphOffset.y = 0.0f;
+        g_FontDefault = io.Fonts->AddFontFromMemoryTTF(
+            (void*)g_IosevkaRegularData, (int)g_IosevkaRegularSize,
+            scaledSize * 1.05f, &embeddedRegular, iosevkaRanges
         );
-        g_FontLarge = io.Fonts->AddFontFromFileTTF(
-            boldYaheiPath, scaledSize * 1.50f, &config, io.Fonts->GetGlyphRangesDefault()
+        g_FontLarge = io.Fonts->AddFontFromMemoryTTF(
+            (void*)g_IosevkaBoldData, (int)g_IosevkaBoldSize,
+            scaledSize * 1.65f, &embeddedRegular, iosevkaRanges
         );
-        g_FontBold = io.Fonts->AddFontFromFileTTF(
-            boldYaheiPath, scaledSize * 1.05f, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
+        g_FontBold = io.Fonts->AddFontFromMemoryTTF(
+            (void*)g_IosevkaBoldData, (int)g_IosevkaBoldSize,
+            scaledSize * 1.08f, &embeddedRegular, iosevkaRanges
         );
+
+        // Merge Chinese glyphs into each embedded Latin font when available.
+        if (hasYahei) {
+            ImFontConfig yaheiCfg = config;
+            yaheiCfg.MergeMode = true;
+            io.Fonts->AddFontFromFileTTF(yaheiPath, scaledSize, &yaheiCfg,
+                                          io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+            ImFontConfig yaheiBoldCfg = config;
+            yaheiBoldCfg.MergeMode = true;
+            io.Fonts->AddFontFromFileTTF(boldYaheiPath, scaledSize * 1.05f, &yaheiBoldCfg,
+                                          io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        }
     }
 
     // --- Load Oswald Font for KPI Card Values and Units ---

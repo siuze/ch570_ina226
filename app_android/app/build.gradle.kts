@@ -11,8 +11,8 @@ android {
         applicationId = "com.ch570.probe.monitor"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "2.0.1"
+        versionCode = 208
+        versionName = "2.0.8"
 
         vectorDrawables {
             useSupportLibrary = true

@@ -28,7 +28,11 @@ object BlePacketParser {
 
         // Method 1: Check standard Android ServiceData map
         val sData = record.getServiceData(TARGET_SERVICE_UUID)
-        if (sData != null && sData.size >= 5) {
+        // The current format always includes the rolling sequence byte. A
+        // four-byte payload is the retired raw-ADC format and must be ignored;
+        // decoding it as the packed word produces the characteristic half-
+        // voltage and nonsensical current values.
+        if (sData != null && sData.size == 5) {
             return parsePayload(sData, 0)
         }
 
@@ -48,7 +52,7 @@ object BlePacketParser {
 
             val type = bytes[i + 1].toInt() and 0xFF
             // 0x16: Service Data - 16-bit UUID
-            if (type == 0x16 && len >= 8) {
+            if (type == 0x16 && len == 8) {
                 val uuidLo = bytes[i + 2].toInt() and 0xFF
                 val uuidHi = bytes[i + 3].toInt() and 0xFF
                 // 0xFCD2 (Little-endian: 0xD2, 0xFC)
@@ -67,10 +71,11 @@ object BlePacketParser {
      * Decode payload starting at [offset]:
      * - Bytes 0..3: packed 32-bit value; low 17 bits are signed current
      *   (0.125 mA/LSB), high 15 bits are bus voltage (1.25 mV/LSB)
-     * - Byte 4 (optional): sequence
+     * - Byte 4: rolling sequence (required; distinguishes the current format
+     *   from the retired raw-ADC payload)
      */
     private fun parsePayload(data: ByteArray, offset: Int): ParsedAdvData? {
-        if (data.size < offset + 4) return null
+        if (data.size != offset + 5) return null
 
         val packed = (data[offset].toInt() and 0xFF) or
                 ((data[offset + 1].toInt() and 0xFF) shl 8) or
@@ -80,7 +85,7 @@ object BlePacketParser {
         if ((currentCode and 0x10000) != 0) currentCode = currentCode or -0x20000
         val busVoltageCode = (packed ushr 17) and 0x7FFF
 
-        val seq = if (data.size > offset + 4) data[offset + 4].toInt() and 0xFF else 0
+        val seq = data[offset + 4].toInt() and 0xFF
 
         val currentMa = currentCode.toDouble() * 0.125
         val voltageV = busVoltageCode.toDouble() * 0.00125

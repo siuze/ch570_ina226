@@ -99,12 +99,6 @@ __HIGH_CODE void BLE_AdvMarkDone(void)
  *               bus voltage unsigned 15-bit (1.25mV/LSB)
  *   Byte 8: rolling sequence, used to detect lost advertisements
  */
-static void put_u16le(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v & 0xFF);
-    p[1] = (uint8_t)(v >> 8);
-}
-
 void BLE_AdvSetTelemetryFixed(int32_t current_ua, uint32_t bus_uv, uint32_t power_mw)
 {
     (void)power_mw;

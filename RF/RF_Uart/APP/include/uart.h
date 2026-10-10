@@ -58,6 +58,11 @@ void MAX811_ResetTarget(void);
 void MAX811_BootloaderTarget(void);
 void MAX811_Poll(void);
 
+/* Probe temporary --without-UART LED controller. */
+void Probe_LED_Init(void);
+void Probe_LED_Poll(void);
+void Probe_LED_TimerISR(void);
+
 #ifdef __cplusplus
 }
 #endif

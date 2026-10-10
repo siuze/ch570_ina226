@@ -20,8 +20,12 @@ extern "C"
 /* Firmware version string reported to the host via "CMD:VER?" (format: YYYY-MM-DD rNN).
  * Override at build time with -DFW_VERSION_STR=\"...\" if desired. */
 #ifndef FW_VERSION_STR
-#define FW_VERSION_STR         "2026-10-07 r20-ble-packed"
+#define FW_VERSION_STR         "2026-10-11 r21--without-UART"
 #endif
+
+/* Temporary Probe build: PA0/PA1 are LED outputs and the target UART
+ * passthrough is intentionally disabled. */
+#define PROBE_WITHOUT_UART     1
 
 #define  DEF_FREQUENCY   17              // ͨ��Ƶ��
 #define  TEST_PHY_MODE   PHY_MODE_PHY_2M

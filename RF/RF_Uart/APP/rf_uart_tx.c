@@ -426,9 +426,11 @@ static void handle_control_command( ctrl_cmd_pkt_t *pCmd )
             MAX811_BootloaderTarget();
             break;
         case CTRL_OP_SWAP_UART:
+#if !PROBE_WITHOUT_UART
             g_dev_config.uart_swapped = pCmd->param8 ? 1 : 0;
             UART_SwapPins( g_dev_config.uart_swapped );
             Config_Save();
+#endif
             break;
         case CTRL_OP_SET_CFG:
             if( pCmd->param32 > 0 ) g_dev_config.shunt_uohm = pCmd->param32;
@@ -575,6 +577,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
             }
             else
             {
+#if !PROBE_WITHOUT_UART
                 len = pPkt_t->length-PKT_DATA_OFFSET-1;
                 rf_uart_buf_normalize();
                 gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
@@ -594,6 +597,9 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 {
                     getDataProbe = 0;
                 }
+#else
+                (void)len;
+#endif
             }
         }
     }
@@ -622,7 +628,9 @@ static void rfProcessRx( rfPackage_t *pPkt )
         if( gBoundStatus == BOUND_STATUS_WAIT )
         {
             gBoundStatus = BOUND_STATUS_EST;
+#if !PROBE_WITHOUT_UART
             UART_SetTimer( gInterval );
+#endif
         }
 
         if( pPkt->length == PKT_DATA_OFFSET )
@@ -648,6 +656,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
         }
         else if( pRsp_t->opcode == OPCODE_BSP )
         {
+#if !PROBE_WITHOUT_UART
             if (pRsp_t->buad_t.BaudRate != gBaudRate && pRsp_t->buad_t.BaudRate >= 1200 && pRsp_t->buad_t.BaudRate <= 2000000)
             {
                 SetSysClock(CLK_SOURCE_HSE_PLL_100MHz);
@@ -677,9 +686,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 R8_UART_LCR &= ~RB_LCR_WORD_SZ;
                 R8_UART_LCR |= (pRsp_t->buad_t.DataBits-5);
             }
+#endif
         }
         else if( pRsp_t->opcode == OPCODE_DATA )
         {
+#if !PROBE_WITHOUT_UART
             typeBufSize len;
             pPkt_t = pPkt;
 
@@ -703,6 +714,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
             {
                 getDataProbe = 0;
             }
+#endif
         }
     }
 }
@@ -911,9 +923,13 @@ void RF_StatusQuery( void )
          * target UART to drain a packet before the next RF transaction.  At
          * 460800 and above, use the full RF payload so the 10 ms link cycle
          * is not the dominant limit during ESP ROM flashing. */
+#if PROBE_WITHOUT_UART
+        const uint16_t credit_limit = DATA_LEN_MAX_TX;
+#else
         const uint16_t credit_limit = (gBaudRate >= 460800u) ?
                                       PROBE_UART_RF_CREDIT_FAST :
                                       PROBE_UART_RF_CREDIT_DEFAULT;
+#endif
         uint8_t probe_flow_credit;
         if (free_rf_buf < credit_limit)
         {
@@ -1039,6 +1055,9 @@ void RF_StatusQuery( void )
 
         if( gBoundStatus == BOUND_STATUS_EST )
         {
+#if PROBE_WITHOUT_UART
+            s = 0x80;
+#else
             gTxBuf.len = DATA_LEN_MAX_TX;
             s = UART_RxQuery( (void *)(pPkt_t+1), &gTxBuf.len );
             if( s == 0 )
@@ -1052,6 +1071,7 @@ void RF_StatusQuery( void )
                 rf_tx_start( gTxBuf.TxBuf, 60 );
                 return;
             }
+#endif
         }
         else
         {
@@ -1120,6 +1140,7 @@ void RF_StatusQuery( void )
 
             if( getDataProbe )
             {
+#if !PROBE_WITHOUT_UART
                 /* Keep RF and target UART pipelined.  There is still only one
                  * RF request in flight (gTxBuf.status == STA_BUSY), and every
                  * response is appended in sequence order.  Waiting for the
@@ -1136,6 +1157,7 @@ void RF_StatusQuery( void )
                 pPkt_t->seq = gTxDataSeq;
                 pPkt_t->resv = probe_flow_credit;
                 rf_tx_start( gTxBuf.TxBuf, 60 );
+#endif
             }
         }
     }

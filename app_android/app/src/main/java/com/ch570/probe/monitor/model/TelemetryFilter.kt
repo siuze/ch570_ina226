@@ -7,7 +7,8 @@ import kotlin.math.max
 
 /**
  * Filter and format logic for jitter-free KPI card display,
- * strictly matching docs/上位机数据显示与抗抖设计.md and app_win.
+ * matching the Windows KPI display filter. Large physical steps follow the
+ * newest sample immediately; ordinary noise uses a short EMA.
  */
 class TelemetryFilter {
 
@@ -47,10 +48,20 @@ class TelemetryFilter {
             smoothInitialized = true
         } else {
             val dt = (newestTs - filterLastTimestamp).coerceIn(0.01, 2.0)
-            val alpha = 1.0 - exp(-dt / 0.8)
-            smoothCurrent += (medianCurrent - smoothCurrent) * alpha
-            smoothPower += (medianPower - smoothPower) * alpha
-            smoothVoltage += (medianVoltage - smoothVoltage) * alpha
+            val largeJump =
+                abs(newest.currentMa - smoothCurrent) >= max(250.0, abs(smoothCurrent) * 0.50) ||
+                abs(newest.powerMw - smoothPower) >= max(250.0, abs(smoothPower) * 0.50) ||
+                abs(newest.voltageV - smoothVoltage) >= max(0.5, abs(smoothVoltage) * 0.50)
+            if (largeJump) {
+                smoothCurrent = newest.currentMa
+                smoothPower = newest.powerMw
+                smoothVoltage = newest.voltageV
+            } else {
+                val alpha = 1.0 - exp(-dt / 0.25)
+                smoothCurrent += (medianCurrent - smoothCurrent) * alpha
+                smoothPower += (medianPower - smoothPower) * alpha
+                smoothVoltage += (medianVoltage - smoothVoltage) * alpha
+            }
         }
         filterLastTimestamp = newestTs
 

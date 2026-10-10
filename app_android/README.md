@@ -13,7 +13,8 @@
   - **免配对原生监听**：基于 Android 原生 `BluetoothLeScanner`（低延迟模式 `SCAN_MODE_LOW_LATENCY`），无需配对即可捕获 Probe 端发出的 `ADV_NONCONN_IND` 广播包。
   - **抗抖动实时卡片滤波**：严格实现《上位机详细设计.md》第 6 节算法：
     - 最近 3 个采样点计算中值（Median of 3），过滤偶发孤立尖峰；
-    - 时间常数 $\tau \approx 0.8\,\text{s}$ 的一阶指数滑动平均（EMA）；
+    - 普通波动使用 $\tau \approx 0.25\,\text{s}$ 的一阶指数滑动平均（EMA）；
+    - 检测到明显的负载跳变时立即跟随最新采样，避免 0 A 到大电流需要数秒爬升；
     - 采样时间间隔 $\Delta t$ 来自设备实际采样点，与手机屏幕刷新帧率无关。
   - **单位自动切换与滞回**：
     - 电流：$\ge 1.50\,\text{A}$ 切入大单位，$< 1.35\,\text{A}$ 退回小单位（mA）；
@@ -76,7 +77,7 @@ app_android/
 │           ├── model/
 │           │   ├── TelemetryPoint.kt   # 遥测单点数据模型
 │           │   ├── MetricStats.kt      # 极值与均值统计计算
-│           │   ├── TelemetryFilter.kt  # 3点中值 + EMA 0.8s + 滞回防抖算法
+│           │   ├── TelemetryFilter.kt  # 3点中值 + 跳变直通 + EMA 0.25s + 滞回防抖
 │           │   └── TelemetryHistory.kt # 15000 点高性能环形缓冲与能量积分
 │           ├── viewmodel/
 │           │   └── MainViewModel.kt    # 响应式状态管理与业务调度

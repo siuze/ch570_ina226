@@ -103,7 +103,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
     // Create Application Window
     HWND hwnd = ::CreateWindowW(
         wc.lpszClassName,
-        L"CH570 无线串口 & 实时电流功耗监测器 v2.0.8",
+        L"CH570 无线串口 & 实时电流功耗监测器 v2.0.9",
         WS_OVERLAPPEDWINDOW,
         posX, posY, winW, winH,
         nullptr, nullptr, wc.hInstance, nullptr

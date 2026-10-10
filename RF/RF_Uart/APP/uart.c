@@ -9,6 +9,7 @@
 #include "CH57x_common.h"
 #include "rf.h"
 #include "rf_uart_tx.h"
+#include "ina226.h"
 
 static uint8_t uart_buf[UART_BUF_LEN];
 static struct simple_buf *pUartbuf = NULL;
@@ -21,6 +22,164 @@ uint32_t gIntervalTimer;
 uint32_t gUartRxCount;
 
 static uint8_t s_uart_swapped = 0;
+
+#if PROBE_WITHOUT_UART
+/* Probe PA0/PA1 are active-low LEDs in the temporary --without-UART build. */
+#define PROBE_LED_CURRENT_PIN       TXD_PIN_PA0
+#define PROBE_LED_VOLTAGE_PIN       RXD_PIN_PA1
+#define PROBE_LED_PINS              (PROBE_LED_CURRENT_PIN | PROBE_LED_VOLTAGE_PIN)
+#define PROBE_LED_PWM_HZ             250u
+#define PROBE_LED_PWM_STEPS          64u
+#define PROBE_LED_PWM_ISR_HZ         (PROBE_LED_PWM_HZ * PROBE_LED_PWM_STEPS)
+#define PROBE_LED_STARTUP_MS         3000u
+#define PROBE_LED_CURRENT_TAU_MS     120u
+#define PROBE_LED_DUTY_MAX           4095u
+
+extern dev_config_t g_dev_config;
+static volatile uint16_t s_probe_led_voltage_duty = 0;
+static volatile uint16_t s_probe_led_current_duty = 0;
+static uint8_t s_probe_led_phase = 0;
+static uint8_t s_probe_led_initialized = 0;
+static uint32_t s_probe_led_last_poll = 0;
+static uint32_t s_probe_led_phase_tick = 0;
+static uint32_t s_probe_led_phase_q16 = 0;
+static uint32_t s_probe_led_period_ms = 4000u;
+static uint16_t s_probe_led_current_smooth = 0;
+
+static const uint8_t s_probe_led_breath_lut[33] = {
+  0, 1, 3, 6, 10, 16, 24, 34, 46, 60, 76, 94, 113, 133, 153, 173,
+  192, 209, 224, 237, 247, 253, 255, 255, 255, 255, 255, 255,
+  255, 255, 255, 255, 255
+};
+
+static uint8_t probe_led_breath_value(uint32_t phase_q16)
+{
+  uint32_t pos = (phase_q16 * 64u) >> 16;
+  if (pos > 64u) pos = 64u;
+  if (pos <= 32u) return s_probe_led_breath_lut[pos];
+  return s_probe_led_breath_lut[64u - pos];
+}
+
+static void probe_led_voltage_profile(uint32_t bus_mv, uint32_t *period_ms,
+                                      uint16_t *max_duty)
+{
+  /* Nearest nominal rail: 5 V (<=7), 9 V (<=10.5), 12 V (<=15), 18 V. */
+  if (bus_mv <= 7000u) {
+    *period_ms = 4000u; *max_duty = 1638u; /* 40% */
+  } else if (bus_mv <= 10500u) {
+    *period_ms = 3000u; *max_duty = 2457u; /* 60% */
+  } else if (bus_mv <= 15000u) {
+    *period_ms = 2000u; *max_duty = 3276u; /* 80% */
+  } else {
+    *period_ms = 1000u; *max_duty = 4095u; /* 18 V rail */
+  }
+}
+
+/* Called from the 16 kHz timer ISR.  The 64-step carrier and fractional
+ * accumulator give a smooth active-low output while keeping ISR work tiny. */
+__HIGH_CODE
+void Probe_LED_TimerISR(void)
+{
+  static uint8_t level_current = 0, level_voltage = 0;
+  static uint8_t frac_current = 0, frac_voltage = 0;
+  uint16_t d_current = s_probe_led_current_duty;
+  uint16_t d_voltage = s_probe_led_voltage_duty;
+  uint8_t base_current = (uint8_t)(d_current >> 6);
+  uint8_t base_voltage = (uint8_t)(d_voltage >> 6);
+  uint32_t on = 0;
+
+  frac_current = (uint8_t)(frac_current + (d_current & 0x3Fu));
+  frac_voltage = (uint8_t)(frac_voltage + (d_voltage & 0x3Fu));
+  level_current = (uint8_t)(base_current + (frac_current >= 64u));
+  level_voltage = (uint8_t)(base_voltage + (frac_voltage >= 64u));
+  if (frac_current >= 64u) frac_current = (uint8_t)(frac_current - 64u);
+  if (frac_voltage >= 64u) frac_voltage = (uint8_t)(frac_voltage - 64u);
+  if (level_current > PROBE_LED_PWM_STEPS) level_current = PROBE_LED_PWM_STEPS;
+  if (level_voltage > PROBE_LED_PWM_STEPS) level_voltage = PROBE_LED_PWM_STEPS;
+
+  s_probe_led_phase = (uint8_t)((s_probe_led_phase + 1u) & (PROBE_LED_PWM_STEPS - 1u));
+  if (s_probe_led_phase < level_current) on |= PROBE_LED_CURRENT_PIN;
+  if (s_probe_led_phase < level_voltage) on |= PROBE_LED_VOLTAGE_PIN;
+  GPIOA_ResetBits(on);
+  GPIOA_SetBits(PROBE_LED_PINS & ~on);
+}
+
+void Probe_LED_Init(void)
+{
+  GPIOA_ModeCfg(PROBE_LED_PINS, GPIO_ModeOut_PP_5mA);
+  GPIOA_SetBits(PROBE_LED_PINS);
+  /* Preserve the existing power-on indication: PA1 is lit for three seconds. */
+  GPIOA_ResetBits(PROBE_LED_VOLTAGE_PIN);
+  mDelaymS(PROBE_LED_STARTUP_MS);
+  GPIOA_SetBits(PROBE_LED_PINS);
+
+  s_probe_led_voltage_duty = 1638u;
+  s_probe_led_current_duty = 0;
+  s_probe_led_current_smooth = 0;
+  s_probe_led_phase = 0;
+  s_probe_led_phase_q16 = 0;
+  s_probe_led_last_poll = SYS_GetSysTickCnt();
+  s_probe_led_phase_tick = s_probe_led_last_poll;
+  s_probe_led_initialized = 1;
+
+  R32_TMR_CNT_END = GetSysClock() / PROBE_LED_PWM_ISR_HZ;
+  R8_TMR_CTRL_MOD = RB_TMR_ALL_CLEAR;
+  R8_TMR_CTRL_DMA = 0;
+  R8_TMR_INT_FLAG = RB_TMR_IF_CYC_END;
+  R8_TMR_INTER_EN = RB_TMR_IE_CYC_END;
+  R8_TMR_CTRL_MOD = RB_TMR_COUNT_EN;
+  PFIC_EnableIRQ(TMR_IRQn);
+}
+
+void Probe_LED_Poll(void)
+{
+  uint32_t now, ticks_per_ms, elapsed_ms, dt_ms;
+  ina226_data_t data;
+  uint32_t period_ms;
+  uint16_t max_duty;
+  uint8_t breath;
+  int32_t current_ua;
+  uint32_t fullscale_ua;
+  uint32_t target_duty;
+  uint32_t alpha_q16;
+
+  if (!s_probe_led_initialized) return;
+  now = SYS_GetSysTickCnt();
+  ticks_per_ms = GetSysClock() / 1000u;
+  if (ticks_per_ms == 0u) ticks_per_ms = 1u;
+  elapsed_ms = (uint32_t)((now - s_probe_led_phase_tick) / ticks_per_ms);
+  if (elapsed_ms != 0u) {
+    s_probe_led_phase_tick += elapsed_ms * ticks_per_ms;
+    s_probe_led_phase_q16 = (s_probe_led_phase_q16 +
+      (uint32_t)(((uint64_t)elapsed_ms << 16) / s_probe_led_period_ms)) & 0xFFFFu;
+  }
+
+  if ((uint32_t)((now - s_probe_led_last_poll) / ticks_per_ms) < 50u) return;
+  dt_ms = (uint32_t)((now - s_probe_led_last_poll) / ticks_per_ms);
+  s_probe_led_last_poll = now;
+  if (dt_ms > 500u) dt_ms = 500u;
+
+  if (!INA226_ReadData(&data)) return;
+  probe_led_voltage_profile(data.bus_mv, &period_ms, &max_duty);
+  s_probe_led_period_ms = period_ms;
+  breath = probe_led_breath_value(s_probe_led_phase_q16);
+  s_probe_led_voltage_duty = (uint16_t)(((uint32_t)max_duty * breath + 127u) / 255u);
+
+  current_ua = data.current_ua;
+  if (current_ua < 0) current_ua = -current_ua;
+  fullscale_ua = (g_dev_config.full_scale_ma > 0u) ?
+                 ((uint32_t)g_dev_config.full_scale_ma * 1000u) : 1000000u;
+  target_duty = ((uint32_t)current_ua >= fullscale_ua) ?
+                PROBE_LED_DUTY_MAX : ((uint32_t)current_ua * PROBE_LED_DUTY_MAX) / fullscale_ua;
+  if (current_ua > 0 && target_duty < 120u) target_duty = 120u;
+  alpha_q16 = (dt_ms * 65535u) / (PROBE_LED_CURRENT_TAU_MS + dt_ms);
+  if (target_duty > s_probe_led_current_smooth)
+    s_probe_led_current_smooth += (uint16_t)(((target_duty - s_probe_led_current_smooth) * alpha_q16) >> 16);
+  else
+    s_probe_led_current_smooth -= (uint16_t)(((s_probe_led_current_smooth - target_duty) * alpha_q16) >> 16);
+  s_probe_led_current_duty = s_probe_led_current_smooth;
+}
+#endif
 
 /* PA1 drives the Probe RX activity LED (active low).  Keep the UART and its
  * interrupt disabled during this indication so target bytes cannot be
@@ -89,6 +248,9 @@ __HIGH_CODE
 void TMR_IRQHandler(void) {
   if (TMR_GetITFlag(TMR_IT_CYC_END)) {
     TMR_ClearITFlag(TMR_IT_CYC_END);
+#if PROBE_WITHOUT_UART
+    Probe_LED_TimerISR();
+#else
     R32_TMR_CNT_END = gIntervalTimer;
     R8_TMR_CTRL_MOD = RB_TMR_ALL_CLEAR;
     R8_TMR_CTRL_MOD = RB_TMR_COUNT_EN;
@@ -99,6 +261,7 @@ void TMR_IRQHandler(void) {
     } else if (uart_flag == UART_STATUS_SENDING) {
       uart_flag = UART_STATUS_SEND;
     }
+#endif
   }
 }
 

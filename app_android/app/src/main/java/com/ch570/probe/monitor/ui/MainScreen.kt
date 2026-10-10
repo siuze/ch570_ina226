@@ -98,7 +98,7 @@ fun MainScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Android 上位机 v2.0.8 | Design by IEKSIUZE",
+                    text = "Android 上位机 v2.0.9 | Design by IEKSIUZE",
                     fontSize = 11.sp,
                     color = ColorTextMuted,
                     fontWeight = FontWeight.Medium

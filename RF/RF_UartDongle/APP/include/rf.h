@@ -20,7 +20,7 @@ extern "C"
 /* Firmware version string reported to the host via "CMD:VER?" (format: YYYY-MM-DD rNN).
  * Override at build time with -DFW_VERSION_STR=\"...\" if desired. */
 #ifndef FW_VERSION_STR
-#define FW_VERSION_STR         "2026-10-06 r09-rftest-led"
+#define FW_VERSION_STR         "2026-10-11 r10-rftest-led"
 #endif
 
 #define  DEF_FREQUENCY   17              // ͨ��Ƶ��

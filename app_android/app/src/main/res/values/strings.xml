@@ -2,7 +2,7 @@
     <string name="app_name">CH570 功耗监测</string>
     <string name="app_author">IEKSIUZE</string>
     <string name="project_repository_url">https://github.com/siuze/ch570_ina226/releases</string>
-    <string name="app_version">2.0.8</string>
+    <string name="app_version">2.0.9</string>
     <string name="ble_listening">BLE 监听中</string>
     <string name="ble_stopped">BLE 停止</string>
     <string name="btn_start">启动</string>

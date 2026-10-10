@@ -214,7 +214,7 @@ void Dashboard::Render() {
         if (dongleVer.empty()) dongleVer = "未知";
         if (probeVer.empty()) probeVer = "未知";
         const std::string footer = "Dongle " + dongleVer + " | Probe " + probeVer +
-                                   " | 上位机 v2.0.8 | Design by IEKSIUZE";
+                                   " | 上位机 v2.0.9 | Design by IEKSIUZE";
         const float footerSize = 15.0f;
         const ImVec2 footerSizePx = g_FontDefault->CalcTextSizeA(footerSize, FLT_MAX, 0.0f, footer.c_str());
         ImGui::GetForegroundDrawList()->AddText(g_FontDefault, footerSize,
@@ -374,9 +374,9 @@ void Dashboard::RenderKpiCards() {
         pStats = state.history.GetPStats();
     }
 
-    // Display-only filtering: three-sample median rejects one-packet spikes,
-    // then an EMA advances from telemetry timestamps (tau ~= 0.8 s).  This
-    // keeps rendering cadence from changing the numeric response.
+    // Display-only filtering: the median rejects one-packet spikes.  A large
+    // real step (for example plugging a load from 0 to 1 A) follows the newest
+    // sample immediately; ordinary noise uses a short 250 ms EMA.
     std::array<TelemetryPoint, 3> recent{};
     const size_t recentCount = state.history.GetRecent(recent);
     if (recentCount > 0) {
@@ -392,10 +392,21 @@ void Dashboard::RenderKpiCards() {
                 m_smoothInitialized = true;
             } else {
                 const double dt = (std::clamp)(newestTs - m_filterLastSampleTimestamp, 0.01, 2.0);
-                const double alpha = 1.0 - std::exp(-dt / 0.8);
-                m_smoothCurrent += (medianCurrent - m_smoothCurrent) * alpha;
-                m_smoothPower += (medianPower - m_smoothPower) * alpha;
-                m_smoothVoltage += (medianVoltage - m_smoothVoltage) * alpha;
+                const TelemetryPoint& newest = recent[recentCount - 1];
+                const bool largeJump =
+                    std::abs(newest.current_ma - m_smoothCurrent) >= (std::max)(250.0, std::abs(m_smoothCurrent) * 0.50) ||
+                    std::abs(newest.power_mw - m_smoothPower) >= (std::max)(250.0, std::abs(m_smoothPower) * 0.50) ||
+                    std::abs(newest.voltage_v - m_smoothVoltage) >= (std::max)(0.5, std::abs(m_smoothVoltage) * 0.50);
+                if (largeJump) {
+                    m_smoothCurrent = newest.current_ma;
+                    m_smoothPower = newest.power_mw;
+                    m_smoothVoltage = newest.voltage_v;
+                } else {
+                    const double alpha = 1.0 - std::exp(-dt / 0.25);
+                    m_smoothCurrent += (medianCurrent - m_smoothCurrent) * alpha;
+                    m_smoothPower += (medianPower - m_smoothPower) * alpha;
+                    m_smoothVoltage += (medianVoltage - m_smoothVoltage) * alpha;
+                }
             }
             m_filterLastSampleTimestamp = newestTs;
         }

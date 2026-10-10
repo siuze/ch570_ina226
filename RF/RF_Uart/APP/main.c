@@ -22,6 +22,9 @@ void process_main( void )
     {
         RF_StatusQuery();
         MAX811_Poll();
+#if PROBE_WITHOUT_UART
+        Probe_LED_Poll();
+#endif
     }
 }
 
@@ -34,14 +37,22 @@ int main(void)
     SysTick->CMP = 0xFFFFFFFF;
     SysTick->CTLR = (1 << 2) | (1 << 0); // STCLK | STE
 
-    /* Initialize the functional UART before RF.  Its pin order comes from
-     * the saved configuration below; do not force the ISP wiring here. */
+    /* The temporary Probe build dedicates PA0/PA1 to LED indicators. */
+#if PROBE_WITHOUT_UART
+    MAX811_Init();
+#else
     UART_Init();
+#endif
 
     Config_Load();
+#if !PROBE_WITHOUT_UART
     UART_SwapPins( g_dev_config.uart_swapped );
+#endif
 
     INA226_Init( g_dev_config.shunt_uohm, g_dev_config.avg_samples );
+#if PROBE_WITHOUT_UART
+    Probe_LED_Init();
+#endif
     RFRole_Init();
     RF_UartTxInit();
 

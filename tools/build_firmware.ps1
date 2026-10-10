@@ -2,12 +2,14 @@ param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [ValidateSet('Dongle', 'Probe')]
     [string]$Target = 'Dongle',
-    [switch]$Diagnostic
+    [switch]$Diagnostic,
+    [switch]$WithoutUartForTest
 )
 
 $ErrorActionPreference = 'Stop'
 $projectName = if ($Target -eq 'Probe') { 'RF_Uart' } else { 'RF_UartDongle' }
 if ($Diagnostic -and $Target -ne 'Dongle') { throw 'Diagnostic build is only available for Dongle' }
+if ($WithoutUartForTest -and $Target -ne 'Probe') { throw 'WithoutUartForTest is only available for Probe' }
 $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $toolBin = Join-Path $ProjectRoot 'tools/riscv-gcc/riscv-none-elf-gcc-12-win-1.92/bin'
 $gcc = Join-Path $toolBin 'riscv-wch-elf-gcc.exe'
@@ -34,6 +36,10 @@ $common = @(
     '-fdata-sections', '-fno-common', '-fstack-usage',
     '--param=highcode-gen-section-name=1', '-g'
 )
+$defines = @()
+if ($Target -eq 'Probe') {
+    $defines += ('-DPROBE_WITHOUT_UART=' + ($(if ($WithoutUartForTest) { '1' } else { '0' })))
+}
 $includes = @(
     'SRC/Startup', ('RF/' + $projectName + '/APP/include'),
     ('RF/' + $projectName + '/Profile/include'), 'SRC/StdPeriphDriver/inc',
@@ -51,7 +57,7 @@ foreach ($group in $sourceGroups) {
         if ($Diagnostic -and $source.FullName -eq (Join-Path $project 'APP/main.c')) { continue }
         $object = Join-Path $group.Destination ($source.BaseName + '.o')
         Write-Host "CC $($source.Name)"
-        & $gcc @common @includes '-std=gnu99' '-c' '-o' $object $source.FullName
+        & $gcc @common @defines @includes '-std=gnu99' '-c' '-o' $object $source.FullName
         if ($LASTEXITCODE -ne 0) { throw "Compile failed: $($source.FullName)" }
         $objects.Add($object)
     }
@@ -61,7 +67,7 @@ if ($Diagnostic) {
     $source = Join-Path $PSScriptRoot 'diagnostic_main.c'
     $object = Join-Path $output 'APP/diagnostic_main.o'
     Write-Host 'CC diagnostic_main.c'
-    & $gcc @common @includes '-std=gnu99' '-c' '-o' $object $source
+    & $gcc @common @defines @includes '-std=gnu99' '-c' '-o' $object $source
     if ($LASTEXITCODE -ne 0) { throw 'Diagnostic main compile failed' }
     $objects.Add($object)
 }
@@ -74,7 +80,7 @@ Write-Host 'AS startup_CH572.S'
 if ($LASTEXITCODE -ne 0) { throw 'Startup assembly failed' }
 $objects.Add($startupObject)
 
-$name = if ($Diagnostic) { 'RF_UartDongle_diagnostic' } else { $projectName }
+$name = if ($Diagnostic) { 'RF_UartDongle_diagnostic' } elseif ($WithoutUartForTest) { 'RF_Uart_without-UART-for-test' } else { $projectName }
 $elf = Join-Path $output ($name + '.elf')
 $hex = Join-Path $output ($name + '.hex')
 $map = Join-Path $output ($name + '.map')
@@ -86,7 +92,7 @@ $linkArgs = @($common) + @(
     '-Wl,--print-memory-usage', ('-Wl,-Map,' + $map),
     '--specs=nano.specs', '--specs=nosys.specs', '-o', $elf
 ) + @($objects) + @('-lISP572', '-lm', '-lCH57xRF')
-& $gcc @linkArgs
+& $gcc @defines @linkArgs
 if ($LASTEXITCODE -ne 0) { throw 'Link failed' }
 
 & $objcopy '-O' 'ihex' $elf $hex

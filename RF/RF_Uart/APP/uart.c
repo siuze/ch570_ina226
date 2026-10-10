@@ -166,6 +166,12 @@ void Probe_LED_Poll(void)
   if (!INA226_ReadData(&data)) return;
   probe_led_voltage_profile(data.bus_mv, &period_ms, &max_duty);
   s_probe_led_period_ms = period_ms;
+  {
+    uint16_t configured_max = g_dev_config.link_led_max_duty;
+    if (configured_max == 0u) configured_max = 255u;
+    if (configured_max < 26u) configured_max = 26u;
+    max_duty = (uint16_t)(((uint32_t)max_duty * configured_max + 127u) / 255u);
+  }
   breath = probe_led_breath_value(s_probe_led_phase_q16);
   s_probe_led_voltage_duty = (uint16_t)(((uint32_t)max_duty * breath + 127u) / 255u);
 

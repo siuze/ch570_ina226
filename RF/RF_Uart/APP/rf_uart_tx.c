@@ -346,6 +346,10 @@ void Config_Load(void)
      * requested 64-sample default while preserving other explicit settings. */
     if (g_dev_config.avg_samples == 16 || g_dev_config.avg_samples == INA226_AVG_16)
         g_dev_config.avg_samples = 64;
+    if (g_dev_config.link_led_max_duty == 0)
+        g_dev_config.link_led_max_duty = 255;
+    else if (g_dev_config.link_led_max_duty < 26)
+        g_dev_config.link_led_max_duty = 26;
     if (g_dev_config.ble_adv_hz < BLE_ADV_MIN_HZ || g_dev_config.ble_adv_hz > BLE_ADV_MAX_HZ)
         g_dev_config.ble_adv_hz = BLE_ADV_DEFAULT_HZ;
 }
@@ -437,6 +441,7 @@ static void handle_control_command( ctrl_cmd_pkt_t *pCmd )
             if( pCmd->param16 > 0 ) g_dev_config.avg_samples = pCmd->param16;
             if( pCmd->param8 > 0 )  g_dev_config.report_interval_ms = (uint16_t)pCmd->param8 * 10;
             if( pCmd->full_scale_ma > 0 ) g_dev_config.full_scale_ma = pCmd->full_scale_ma;
+            if( pCmd->link_led_max_duty > 0 ) g_dev_config.link_led_max_duty = pCmd->link_led_max_duty;
             if( pCmd->ble_adv_hz >= BLE_ADV_MIN_HZ && pCmd->ble_adv_hz <= BLE_ADV_MAX_HZ )
                 g_dev_config.ble_adv_hz = pCmd->ble_adv_hz;
             INA226_SetConfig( g_dev_config.shunt_uohm, g_dev_config.avg_samples );

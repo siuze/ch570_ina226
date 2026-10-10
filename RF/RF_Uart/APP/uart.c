@@ -106,6 +106,10 @@ void Probe_LED_TimerISR(void)
 
 void Probe_LED_Init(void)
 {
+  /* PA0/PA1 share the debug alternate function on CH57x.  UART_Init used to
+   * clear this bit; the --without-UART path must do it explicitly or both
+   * LED GPIO writes are ignored. */
+  R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
   GPIOA_ModeCfg(PROBE_LED_PINS, GPIO_ModeOut_PP_5mA);
   GPIOA_SetBits(PROBE_LED_PINS);
   /* Preserve the existing power-on indication: PA1 is lit for three seconds. */

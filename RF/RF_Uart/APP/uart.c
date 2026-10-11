@@ -202,9 +202,6 @@ void Probe_LED_Poll(void)
 
   current_ua = data.current_ua;
   if (current_ua < 0) current_ua = -current_ua;
-  /* The UI reports whole mA.  Treat sub-mA shunt noise as zero as well, so
-   * a displayed 0.000 mA cannot leave a visible residual LED level. */
-  if ((uint32_t)current_ua < 1000u) current_ua = 0;
   fullscale_ua = (g_dev_config.full_scale_ma > 0u) ?
                  ((uint32_t)g_dev_config.full_scale_ma * 1000u) : 1000000u;
   target_duty = ((uint32_t)current_ua >= fullscale_ua) ?

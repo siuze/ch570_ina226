@@ -206,6 +206,7 @@ void Probe_LED_Poll(void)
                  ((uint32_t)g_dev_config.full_scale_ma * 1000u) : 1000000u;
   target_duty = ((uint32_t)current_ua >= fullscale_ua) ?
                 PROBE_LED_DUTY_MAX : (uint32_t)(((uint64_t)current_ua * PROBE_LED_DUTY_MAX) / fullscale_ua);
+  if (current_ua != 0 && target_duty == 0u) target_duty = 1u;
   alpha_q16 = (dt_ms * 65535u) / (PROBE_LED_CURRENT_TAU_MS + dt_ms);
   if (target_duty == 0u)
     s_probe_led_current_smooth = 0u;

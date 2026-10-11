@@ -540,6 +540,7 @@ void RF_ProcessTelemetry(void)
         uint64_t duty64 = ((uint64_t)abs_cur_ua * 65535u) /
                           ((uint32_t)g_dongle_cfg.full_scale_ma * 1000u);
         uint32_t duty = (duty64 > 65535u) ? 65535u : (uint32_t)duty64;
+        if (abs_cur_ua != 0 && duty == 0u) duty = 1u;
         g_current_duty = (uint16_t)duty;
     }
 

@@ -21,7 +21,6 @@ extern "C" {
 #define LED2_PIN            (1 << 2) // PA2: Current Indicator (schematic LED201)
 #define LINK_LED_MIN_DUTY   26u       // 10% of the 8-bit full-scale duty
 #define LED_PWM_CYCLE       52083u    // 100MHz / 8 / (52083+1) ~= 240Hz
-#define LED_PWM_MIN_DUTY    2050u     // about 3.1% of 16-bit scale
 
 typedef struct __PACKED _LINE_CODE
 {

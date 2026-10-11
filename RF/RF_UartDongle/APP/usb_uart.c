@@ -1835,6 +1835,7 @@ static void LED_PWM_UpdateDuty(void)
 #if LED_SOFTWARE_PWM_FALLBACK
     s_led_sw_duty1 = (uint16_t)(((uint32_t)s_led1_duty * 4095u + 32767u) / 65535u);
     s_led_sw_duty2 = (uint16_t)(((uint32_t)s_led2_duty * 4095u + 32767u) / 65535u);
+    if (s_led2_duty != 0u && s_led_sw_duty2 == 0u) s_led_sw_duty2 = 1u;
 #else
     /* Reinitializing the PWM counter every few milliseconds causes visible
      * carrier phase steps during RF traffic.  Compare registers are double
@@ -1992,7 +1993,6 @@ void LED2_Poll(void)
     if (g_current_report_tick != 0 && (uint32_t)(now - g_current_report_tick) <= 5u * tick_1s)
     {
         target = g_current_duty;
-        if (target < LED_PWM_MIN_DUTY) target = LED_PWM_MIN_DUTY;
     }
     uint32_t tick_1ms = GetSysClock() / 1000u;
     if (tick_1ms == 0) tick_1ms = 1;
@@ -2006,7 +2006,9 @@ void LED2_Poll(void)
     uint32_t dt_ms = (elapsed_ms > 100u) ? 100u : elapsed_ms;
     uint32_t alpha_q16 = (dt_ms * 65535u) / (LED2_FILTER_TAU_MS + dt_ms);
     if (alpha_q16 == 0) alpha_q16 = 1;
-    if (s_led2_duty < target) {
+    if (target == 0u) {
+        s_led2_duty = 0u;
+    } else if (s_led2_duty < target) {
         uint32_t delta = (uint32_t)target - s_led2_duty;
         uint32_t change = (delta * alpha_q16 + 32767u) / 65535u;
         if (change == 0) change = 1;

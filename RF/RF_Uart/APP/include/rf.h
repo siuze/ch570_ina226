@@ -25,9 +25,9 @@ extern "C"
 
 #ifndef FW_VERSION_STR
 #if PROBE_WITHOUT_UART
-#define FW_VERSION_STR         "r22--without-UART-for-test"
+#define FW_VERSION_STR         "r23--without-UART-for-test"
 #else
-#define FW_VERSION_STR         "2026-10-11 r22"
+#define FW_VERSION_STR         "2026-10-11 r23"
 #endif
 #endif
 

@@ -45,6 +45,9 @@ static uint32_t s_probe_led_phase_tick = 0;
 static uint32_t s_probe_led_phase_q16 = 0;
 static uint32_t s_probe_led_period_ms = 4000u;
 static uint16_t s_probe_led_current_smooth = 0;
+static uint16_t s_probe_led_voltage_max = 1638u;
+static uint32_t s_probe_led_startup_tick = 0;
+static uint8_t s_probe_led_startup_active = 0;
 
 static const uint8_t s_probe_led_breath_lut[33] = {
   0, 1, 3, 6, 10, 16, 24, 34, 46, 60, 76, 94, 113, 133, 153, 173,
@@ -52,12 +55,19 @@ static const uint8_t s_probe_led_breath_lut[33] = {
   255, 255, 255, 255, 255
 };
 
-static uint8_t probe_led_breath_value(uint32_t phase_q16)
+static uint16_t probe_led_breath_duty(uint32_t phase_q16, uint16_t max_duty)
 {
-  uint32_t pos = (phase_q16 * 64u) >> 16;
-  if (pos > 64u) pos = 64u;
-  if (pos <= 32u) return s_probe_led_breath_lut[pos];
-  return s_probe_led_breath_lut[64u - pos];
+  uint32_t pos = ((phase_q16 <= 32768u) ? phase_q16 :
+                  (65536u - phase_q16)) * 64u;
+  uint32_t index = pos >> 16;
+  uint32_t value = (uint32_t)s_probe_led_breath_lut[index] << 16;
+  if (index < 32u) {
+    value += (uint32_t)(s_probe_led_breath_lut[index + 1u] -
+                       s_probe_led_breath_lut[index]) * (pos & 0xFFFFu);
+  }
+  /* Interpolate directly into 12-bit duty; avoid 8-bit brightness steps. */
+  return (uint16_t)(((uint64_t)max_duty * value + (255u << 15)) /
+                    (255u << 16));
 }
 
 static void probe_led_voltage_profile(uint32_t bus_mv, uint32_t *period_ms,
@@ -121,16 +131,16 @@ void Probe_LED_Init(void)
   GPIOA_SetBits(PROBE_LED_PINS);
   /* Preserve the existing power-on indication: PA1 is lit for three seconds. */
   GPIOA_ResetBits(PROBE_LED_VOLTAGE_PIN);
-  mDelaymS(PROBE_LED_STARTUP_MS);
-  GPIOA_SetBits(PROBE_LED_PINS);
 
-  s_probe_led_voltage_duty = 1638u;
+  s_probe_led_voltage_duty = PROBE_LED_DUTY_MAX;
   s_probe_led_current_duty = 0;
   s_probe_led_current_smooth = 0;
   s_probe_led_phase = 0;
   s_probe_led_phase_q16 = 0;
   s_probe_led_last_poll = SYS_GetSysTickCnt();
   s_probe_led_phase_tick = s_probe_led_last_poll;
+  s_probe_led_startup_tick = s_probe_led_last_poll;
+  s_probe_led_startup_active = 1;
   s_probe_led_initialized = 1;
 
   R32_TMR_CNT_END = GetSysClock() / PROBE_LED_PWM_ISR_HZ;
@@ -148,7 +158,6 @@ void Probe_LED_Poll(void)
   ina226_data_t data;
   uint32_t period_ms;
   uint16_t max_duty;
-  uint8_t breath;
   int32_t current_ua;
   uint32_t fullscale_ua;
   uint32_t target_duty;
@@ -158,12 +167,22 @@ void Probe_LED_Poll(void)
   now = SYS_GetSysTickCnt();
   ticks_per_ms = GetSysClock() / 1000u;
   if (ticks_per_ms == 0u) ticks_per_ms = 1u;
+  if (s_probe_led_startup_active &&
+      (uint32_t)(now - s_probe_led_startup_tick) >=
+      PROBE_LED_STARTUP_MS * ticks_per_ms) {
+    s_probe_led_startup_active = 0;
+    s_probe_led_phase_tick = now;
+    s_probe_led_phase_q16 = 0;
+  }
   elapsed_ms = (uint32_t)((now - s_probe_led_phase_tick) / ticks_per_ms);
-  if (elapsed_ms != 0u) {
+  if (!s_probe_led_startup_active && elapsed_ms != 0u) {
     s_probe_led_phase_tick += elapsed_ms * ticks_per_ms;
     s_probe_led_phase_q16 = (s_probe_led_phase_q16 +
       (uint32_t)(((uint64_t)elapsed_ms << 16) / s_probe_led_period_ms)) & 0xFFFFu;
   }
+  s_probe_led_voltage_duty = s_probe_led_startup_active ?
+    PROBE_LED_DUTY_MAX : probe_led_breath_duty(s_probe_led_phase_q16,
+                                             s_probe_led_voltage_max);
 
   if ((uint32_t)((now - s_probe_led_last_poll) / ticks_per_ms) < 50u) return;
   dt_ms = (uint32_t)((now - s_probe_led_last_poll) / ticks_per_ms);
@@ -179,37 +198,27 @@ void Probe_LED_Poll(void)
     if (configured_max < 26u) configured_max = 26u;
     max_duty = (uint16_t)(((uint32_t)max_duty * configured_max + 127u) / 255u);
   }
-  breath = probe_led_breath_value(s_probe_led_phase_q16);
-  s_probe_led_voltage_duty = (uint16_t)(((uint32_t)max_duty * breath + 127u) / 255u);
+  s_probe_led_voltage_max = max_duty;
 
   current_ua = data.current_ua;
   if (current_ua < 0) current_ua = -current_ua;
+  /* The UI reports whole mA.  Treat sub-mA shunt noise as zero as well, so
+   * a displayed 0.000 mA cannot leave a visible residual LED level. */
+  if ((uint32_t)current_ua < 1000u) current_ua = 0;
   fullscale_ua = (g_dev_config.full_scale_ma > 0u) ?
                  ((uint32_t)g_dev_config.full_scale_ma * 1000u) : 1000000u;
   target_duty = ((uint32_t)current_ua >= fullscale_ua) ?
-                PROBE_LED_DUTY_MAX : ((uint32_t)current_ua * PROBE_LED_DUTY_MAX) / fullscale_ua;
-  if (current_ua > 0 && target_duty < 120u) target_duty = 120u;
+                PROBE_LED_DUTY_MAX : (uint32_t)(((uint64_t)current_ua * PROBE_LED_DUTY_MAX) / fullscale_ua);
   alpha_q16 = (dt_ms * 65535u) / (PROBE_LED_CURRENT_TAU_MS + dt_ms);
-  if (target_duty > s_probe_led_current_smooth)
-    s_probe_led_current_smooth += (uint16_t)(((target_duty - s_probe_led_current_smooth) * alpha_q16) >> 16);
+  if (target_duty == 0u)
+    s_probe_led_current_smooth = 0u;
+  else if (target_duty > s_probe_led_current_smooth)
+    s_probe_led_current_smooth += (uint16_t)(((target_duty - s_probe_led_current_smooth) * alpha_q16 + 65535u) >> 16);
   else
-    s_probe_led_current_smooth -= (uint16_t)(((s_probe_led_current_smooth - target_duty) * alpha_q16) >> 16);
+    s_probe_led_current_smooth -= (uint16_t)(((s_probe_led_current_smooth - target_duty) * alpha_q16 + 65535u) >> 16);
   s_probe_led_current_duty = s_probe_led_current_smooth;
 }
 #endif
-
-/* PA1 drives the Probe RX activity LED (active low).  Keep the UART and its
- * interrupt disabled during this indication so target bytes cannot be
- * consumed before RF/UART initialization is complete. */
-#define UART_STARTUP_RX_LED_MS 3000u
-
-static void uart_startup_rx_led(void) {
-  GPIOA_ResetBits(RXD_PIN_PA1);
-  GPIOA_ModeCfg(RXD_PIN_PA1, GPIO_ModeOut_PP_5mA);
-  mDelaymS(UART_STARTUP_RX_LED_MS);
-  GPIOA_SetBits(RXD_PIN_PA1);
-  GPIOA_ModeCfg(RXD_PIN_PA1, GPIO_ModeIN_PU);
-}
 
 /* MAX811S reset timing.  RESET# release is specified up to about 900 ms;
  * keep BOOT asserted with margin, then settle C106 before returning PA7 to a
@@ -518,8 +527,6 @@ void UART_Init(void) {
   R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
   MAX811_Init();
-
-  uart_startup_rx_led();
 
   /* Default UART configuration */
   UART_SwapPins(0);

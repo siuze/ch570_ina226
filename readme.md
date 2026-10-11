@@ -102,3 +102,7 @@ ch570mon-linux-aarch64
 - [立创开源硬件平台项目描述](docs/立创开源硬件平台项目描述.md)
 - `docs/CH572DS1.PDF`：CH570/CH572 芯片手册
 - `docs/max811s_datasheet.pdf`：MAX811S 复位芯片手册
+
+## 原理图与PCB
+
+https://oshwhub.com/ieksiuze/project_iaiehsga

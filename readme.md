@@ -2,6 +2,10 @@
 
 本项目由 Probe、Dongle 和配套上位机组成：Probe 连接目标 MCU，Dongle 连接电脑，两端通过 2.4 GHz 链路实现串口透传；Probe 同时使用 INA226 采集电流、电压和功率。Windows、Linux 和 Android 上位机源码分别位于 `app_win`、`app_linux` 和 `app_android`。
 
+![实物图](./docs/figures/IMG20261007125626.jpg)
+![上位机](./docs/figures/QQ20261007-013212.png)
+![安卓](./docs/figures/Screenshot_2026-10-06-15-16-23-27_7eeaf790afa569f6919d1cca465545fe.jpg)
+
 ## 环境要求
 
 固件编译：

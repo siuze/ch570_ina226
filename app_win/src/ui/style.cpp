@@ -2,6 +2,7 @@
 #include "g_iosevkaregular_font_data.hpp"
 #include "g_iosevkabold_font_data.hpp"
 #include "dseg7_font_data.hpp"
+#include "g_cjk_font_data.hpp"
 #include "implot.h"
 #include "imgui_internal.h"
 #include <windows.h>
@@ -19,6 +20,51 @@ ImFont* g_FontOswaldLarge = nullptr;
 ImFont* g_FontOswaldMedium = nullptr;
 ImFont* g_FontDseg = nullptr;
 ImFont* g_FontDsegMedium = nullptr;
+
+namespace {
+
+// Is this codepoint covered by the embedded CJK subset (g_CjkFontRanges holds
+// sorted, non-overlapping inclusive pairs, zero-terminated)?
+bool IsCjkSubsetCodepoint(ImWchar cp) {
+    int lo = 0;
+    int hi = ((int)(sizeof(g_CjkFontRanges) / sizeof(g_CjkFontRanges[0])) - 2) / 2;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        ImWchar rangeLo = g_CjkFontRanges[mid * 2];
+        ImWchar rangeHi = g_CjkFontRanges[mid * 2 + 1];
+        if (cp < rangeLo) hi = mid - 1;
+        else if (cp > rangeHi) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
+// ChineseSimplifiedCommon minus the embedded-subset codepoints. The atlas
+// stores glyphs of a font in a flat append-only list, so two sources must
+// never claim the same codepoint for one font; merging the system font over
+// this difference set keeps glyph ownership deterministic while extending
+// coverage to runtime text (serial passthrough, device friendly names, user
+// input) whenever a system CJK font is installed.
+const ImWchar* GetSystemCjkRangesExcludingSubset(ImFontAtlas* atlas) {
+    static ImVector<ImWchar> ranges; // static: must outlive the atlas Build()
+    if (ranges.empty()) {
+        const ImWchar* full = atlas->GetGlyphRangesChineseSimplifiedCommon();
+        for (const ImWchar* r = full; r[0] != 0; r += 2)
+            for (ImWchar cp = r[0]; cp <= r[1]; cp++) {
+                if (IsCjkSubsetCodepoint(cp)) continue;
+                if (!ranges.empty() && (ImWchar)(ranges.back() + 1) == cp)
+                    ranges.back() = cp;
+                else {
+                    ranges.push_back(cp);
+                    ranges.push_back(cp);
+                }
+            }
+        ranges.push_back(0);
+    }
+    return ranges.Data;
+}
+
+} // namespace
 
 void UIStyle::ApplyModernLightTheme(float dpiScale) {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -147,11 +193,16 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
     bool hasIosevka = !iosevkaRegPath.empty();
     if (iosevkaBoldPath.empty() && hasIosevka) iosevkaBoldPath = iosevkaRegPath;
 
+    // System CJK fonts for the runtime-text fallback layer. They extend the
+    // embedded subset over ChineseSimplifiedCommon; the subset alone already
+    // guarantees every static UI string, so all three may legitimately be
+    // null on lean machines (which is exactly why the subset exists).
     const char* yaheiPath = "C:\\Windows\\Fonts\\msyh.ttc";
     const char* yaheiBoldPath = "C:\\Windows\\Fonts\\msyhbd.ttc";
-    bool hasYahei = (_access(yaheiPath, 0) == 0);
-    bool hasYaheiBold = (_access(yaheiBoldPath, 0) == 0);
-    const char* boldYaheiPath = hasYaheiBold ? yaheiBoldPath : yaheiPath;
+    const char* simheiPath = "C:\\Windows\\Fonts\\simhei.ttf";
+    const char* systemCjkRegular = (_access(yaheiPath, 0) == 0) ? yaheiPath : nullptr;
+    const char* systemCjkBold = (_access(yaheiBoldPath, 0) == 0) ? yaheiBoldPath : systemCjkRegular;
+    const char* systemCjkTitle = (_access(simheiPath, 0) == 0) ? simheiPath : systemCjkBold;
 
     static const ImWchar iosevkaRanges[] = {
         0x0020, 0x00FF, // Basic Latin + Latin Supplement
@@ -162,8 +213,42 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
         0
     };
 
+    // Merges the two CJK layers into the font added last (MergeMode merges
+    // into the previous font, so each call site must immediately follow its
+    // base font):
+    //   1. embedded subset  - static UI strings, deterministic on every machine
+    //   2. system CJK font  - restricted to ChineseSimplifiedCommon minus the
+    //      subset codepoints, so runtime text (serial passthrough, device
+    //      friendly names, user input) renders whenever a system font exists,
+    //      with zero codepoint overlap against layer 1
+    auto mergeCjkLayers = [&](float sizeMul, const char* systemFontPath) {
+        ImFontConfig subsetCfg;
+        subsetCfg.MergeMode = true;
+        subsetCfg.OversampleH = 1;
+        subsetCfg.OversampleV = 1;
+        subsetCfg.PixelSnapH = true;
+        subsetCfg.RasterizerMultiply = 1.15f;
+        subsetCfg.GlyphOffset.y = -1.5f * dpiScale;
+        io.Fonts->AddFontFromMemoryTTF(
+            (void*)g_CjkFontData, (int)g_CjkFontSize, scaledSize * sizeMul, &subsetCfg, g_CjkFontRanges
+        );
+        if (systemFontPath) {
+            ImFontConfig sysCfg;
+            sysCfg.MergeMode = true;
+            sysCfg.OversampleH = 1;
+            sysCfg.OversampleV = 1;
+            sysCfg.PixelSnapH = true;
+            sysCfg.RasterizerMultiply = 1.15f;
+            sysCfg.GlyphOffset.y = -1.5f * dpiScale;
+            io.Fonts->AddFontFromFileTTF(
+                systemFontPath, scaledSize * sizeMul, &sysCfg,
+                GetSystemCjkRangesExcludingSubset(io.Fonts)
+            );
+        }
+    };
+
     if (hasIosevka) {
-        // --- 1. Default UI Font: Iosevka Regular (Latin/Numbers/Symbols) + YaHei Fallback (Chinese) ---
+        // --- 1. Default UI Font: Iosevka Regular (Latin/Numbers/Symbols) + Embedded CJK Subset + System Fallback ---
         ImFontConfig iosevkaCfg;
         iosevkaCfg.FontNo = 0;
         iosevkaCfg.OversampleH = 1;
@@ -173,19 +258,7 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
         g_FontDefault = io.Fonts->AddFontFromFileTTF(
             iosevkaRegPath.c_str(), scaledSize * 1.05f, &iosevkaCfg, iosevkaRanges
         );
-
-        if (hasYahei) {
-            ImFontConfig yaheiCfg;
-            yaheiCfg.MergeMode = true;
-            yaheiCfg.OversampleH = 1;
-            yaheiCfg.OversampleV = 1;
-            yaheiCfg.PixelSnapH = true;
-            yaheiCfg.RasterizerMultiply = 1.15f;
-            yaheiCfg.GlyphOffset.y = -1.5f * dpiScale;
-            io.Fonts->AddFontFromFileTTF(
-                yaheiPath, scaledSize, &yaheiCfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
-            );
-        }
+        mergeCjkLayers(1.0f, systemCjkRegular);
 
         // --- 2. Large KPI Numeric Font: Pure Iosevka Bold ---
         ImFontConfig largeCfg;
@@ -208,19 +281,7 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
         g_FontBold = io.Fonts->AddFontFromFileTTF(
             iosevkaBoldPath.c_str(), scaledSize * 1.08f, &boldCfg, iosevkaRanges
         );
-
-        if (hasYahei) {
-            ImFontConfig yaheiBoldCfg;
-            yaheiBoldCfg.MergeMode = true;
-            yaheiBoldCfg.OversampleH = 1;
-            yaheiBoldCfg.OversampleV = 1;
-            yaheiBoldCfg.PixelSnapH = true;
-            yaheiBoldCfg.RasterizerMultiply = 1.15f;
-            yaheiBoldCfg.GlyphOffset.y = -1.5f * dpiScale;
-            io.Fonts->AddFontFromFileTTF(
-                boldYaheiPath, scaledSize * 1.05f, &yaheiBoldCfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
-            );
-        }
+        mergeCjkLayers(1.05f, systemCjkBold);
     } else {
         // Embedded Iosevka keeps the UI typography deterministic on machines
         // where the user has not installed the optional system font.
@@ -237,6 +298,7 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
             (void*)g_IosevkaRegularData, (int)g_IosevkaRegularSize,
             scaledSize * 1.05f, &embeddedRegular, iosevkaRanges
         );
+        mergeCjkLayers(1.0f, systemCjkRegular);
         g_FontLarge = io.Fonts->AddFontFromMemoryTTF(
             (void*)g_IosevkaBoldData, (int)g_IosevkaBoldSize,
             scaledSize * 1.65f, &embeddedRegular, iosevkaRanges
@@ -245,18 +307,7 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
             (void*)g_IosevkaBoldData, (int)g_IosevkaBoldSize,
             scaledSize * 1.08f, &embeddedRegular, iosevkaRanges
         );
-
-        // Merge Chinese glyphs into each embedded Latin font when available.
-        if (hasYahei) {
-            ImFontConfig yaheiCfg = config;
-            yaheiCfg.MergeMode = true;
-            io.Fonts->AddFontFromFileTTF(yaheiPath, scaledSize, &yaheiCfg,
-                                          io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-            ImFontConfig yaheiBoldCfg = config;
-            yaheiBoldCfg.MergeMode = true;
-            io.Fonts->AddFontFromFileTTF(boldYaheiPath, scaledSize * 1.05f, &yaheiBoldCfg,
-                                          io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-        }
+        mergeCjkLayers(1.05f, systemCjkBold);
     }
 
     // --- Load Oswald Font for KPI Card Values and Units ---
@@ -294,11 +345,12 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
     }
 
     // --- Load Title Bold Chinese Font (Heavy Black Gothic) ---
-    // NotoSansSC-VF.ttf on Windows is a Variable Font which stb_truetype opens as hairline thin.
-    // msyhbd.ttc (Microsoft YaHei Bold) or simhei.ttf (SimHei) provides true Black/Heavy bold weight.
-    const char* simheiPath = "C:\\Windows\\Fonts\\simhei.ttf";
-    const char* titleChineseFont = (_access(simheiPath, 0) == 0) ? simheiPath :
-                                   ((_access(yaheiBoldPath, 0) == 0) ? yaheiBoldPath : boldYaheiPath);
+    // Base layer is the embedded subset: RasterizerMultiply emulates the heavy
+    // stroke of simhei/msyhbd and never depends on system files (a Variable
+    // Font such as NotoSansSC-VF.ttf would open as hairline with stb_truetype,
+    // which is why a system font is only ever a merge source here, never the
+    // base). The system Hei font is merged over the difference ranges so even
+    // runtime Chinese in card headers renders when one is installed.
     ImFontConfig titleCfg;
     titleCfg.FontNo = 0;
     titleCfg.OversampleH = 1;
@@ -306,9 +358,17 @@ void UIStyle::LoadFonts(float baseFontSize, float dpiScale) {
     titleCfg.PixelSnapH = true;
     titleCfg.RasterizerMultiply = 1.35f; // Extra bold stroke density
     titleCfg.GlyphOffset.y = -1.0f * dpiScale;
-    g_FontTitleBold = io.Fonts->AddFontFromFileTTF(
-        titleChineseFont, scaledSize * 1.25f, &titleCfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()
+    g_FontTitleBold = io.Fonts->AddFontFromMemoryTTF(
+        (void*)g_CjkFontData, (int)g_CjkFontSize, scaledSize * 1.25f, &titleCfg, g_CjkFontRanges
     );
+    if (g_FontTitleBold && systemCjkTitle) {
+        ImFontConfig titleSysCfg = titleCfg;
+        titleSysCfg.MergeMode = true;
+        io.Fonts->AddFontFromFileTTF(
+            systemCjkTitle, scaledSize * 1.25f, &titleSysCfg,
+            GetSystemCjkRangesExcludingSubset(io.Fonts)
+        );
+    }
     if (!g_FontTitleBold) g_FontTitleBold = g_FontBold;
 
     // --- Load 7-Segment Digital Tube Font (DSEG7 Classic) from Embedded Binary Memory ---
